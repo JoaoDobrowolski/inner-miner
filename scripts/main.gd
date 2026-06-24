@@ -10,9 +10,14 @@ var player: Player
 var rope: Rope
 var camera: Camera2D
 var hud: Label
+var panic: PanicSystem
+var panic_overlay: ColorRect
+var panic_fill: ColorRect
 
 var panicking := false
+var emergency := false
 var debug_view := false
+var torches: Array = []
 
 var _spawn := Vector2.ZERO
 
@@ -25,6 +30,7 @@ func _ready() -> void:
     var sx := int(GridWorld.W / 2)
     var anchor_pos := Vector2((sx + 0.5) * GridWorld.CELL, 1.0 * GridWorld.CELL)
     rope = Rope.new(world, anchor_pos, MAX_ROPE_METERS * PPM)
+    panic = PanicSystem.new()
 
     player = Player.new()
     add_child(player)
@@ -44,6 +50,29 @@ func _ready() -> void:
 func _build_hud() -> void:
     var layer := CanvasLayer.new()
     add_child(layer)
+
+    # full-screen red vignette that intensifies with panic
+    panic_overlay = ColorRect.new()
+    panic_overlay.color = Color(0.7, 0.0, 0.0, 0.0)
+    panic_overlay.anchor_right = 1.0
+    panic_overlay.anchor_bottom = 1.0
+    panic_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    layer.add_child(panic_overlay)
+
+    var bar_bg := ColorRect.new()
+    bar_bg.color = Color(0, 0, 0, 0.5)
+    bar_bg.position = Vector2(12, 84)
+    bar_bg.size = Vector2(220, 18)
+    bar_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    layer.add_child(bar_bg)
+
+    panic_fill = ColorRect.new()
+    panic_fill.color = Color(0.2, 0.8, 0.3)
+    panic_fill.position = Vector2(14, 86)
+    panic_fill.size = Vector2(0, 14)
+    panic_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    layer.add_child(panic_fill)
+
     hud = Label.new()
     hud.position = Vector2(12, 12)
     hud.add_theme_color_override("font_color", Color.WHITE)
@@ -57,8 +86,13 @@ func _physics_process(delta: float) -> void:
     if panicking:
         if rope.rewind_step(player, delta):
             _end_panic()
-    elif rope.reeling:
-        rope.reel(delta)
+    else:
+        if rope.reeling:
+            rope.reel(delta)
+        panic.update(delta, player.position, world, torches)
+        if panic.value >= 100.0:
+            emergency = true
+            _start_panic()
 
     _update_hud()
     queue_redraw()
@@ -71,6 +105,8 @@ func _unhandled_input(event: InputEvent) -> void:
                 debug_view = not debug_view
             KEY_K:
                 _start_panic()
+            KEY_T:
+                _place_torch()
             KEY_R:
                 _reset()
     elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
@@ -92,6 +128,13 @@ func _try_dig(world_pos: Vector2) -> void:
     world.dig(tc.x, tc.y)
 
 
+func _place_torch() -> void:
+    if panicking:
+        return
+    var pc := world.world_to_cell(player.position)
+    torches.append(world.cell_center(pc.x, pc.y))
+
+
 func _start_panic() -> void:
     if panicking:
         return
@@ -103,28 +146,38 @@ func _start_panic() -> void:
 
 func _end_panic() -> void:
     panicking = false
+    emergency = false
     player.rewinding = false
     player.position = _spawn                 # land on solid ground, not over the open shaft
     player.velocity = Vector2.ZERO
+    panic.value = 0.0
     rope.pivots.clear()
     rope.rope_out = rope.max_length * 0.5
 
 
 func _reset() -> void:
     panicking = false
+    emergency = false
     player.rewinding = false
     player.position = _spawn
     player.velocity = Vector2.ZERO
+    panic.value = 0.0
     rope.pivots.clear()
     rope.rope_out = rope.max_length * 0.5
 
 
 func _update_hud() -> void:
     var used_m := rope.used_length(player.position) / PPM
+    var status := ("[ EMERGENCY RESCUE ]" if emergency else ("[ RESCUE ]" if panicking else ""))
     hud.text = "ROPE  out %.1fm / max %.1fm  used %.1fm  pivots %d\n" % [
         rope.rope_out / PPM, rope.max_length / PPM, used_m, rope.pivots.size()]
-    hud.text += "ground:%s  %s\n" % [str(player.on_ground), ("[ RESCUE ]" if panicking else "")]
-    hud.text += "A/D move·swing   SPACE jump   click=dig L/R/down   J=reel up   K=rescue   R=reset   F1=debug"
+    hud.text += "PANIC %d%%   torches %d   %s\n" % [int(panic.value), torches.size(), status]
+    hud.text += "A/D move·swing  SPACE jump  click=dig  J=reel  T=torch  K=rescue  R=reset  F1=debug"
+
+    var f := clampf(panic.value / 100.0, 0.0, 1.0)
+    panic_overlay.color.a = f * 0.45
+    panic_fill.size.x = 216.0 * f
+    panic_fill.color = Color(0.2, 0.8, 0.3).lerp(Color(0.9, 0.1, 0.1), f)
 
 
 func _draw() -> void:
@@ -142,6 +195,10 @@ func _draw() -> void:
     draw_circle(rope.anchor, 5.0, Color(0.60, 0.40, 0.20))   # winch
     for p in rope.pivots:
         draw_circle(p["pos"], 4.0, Color(1.0, 0.30, 0.30))   # wrap corners
+
+    for t in torches:
+        draw_circle(t, panic.torch_radius, Color(1.0, 0.7, 0.2, 0.07))   # safe zone
+        draw_circle(t, 5.0, Color(1.0, 0.6, 0.1))                        # torch
 
     if debug_view:
         var c := GridWorld.CELL

@@ -17,6 +17,7 @@ var panic_fill: ColorRect
 var panicking := false
 var emergency := false
 var debug_view := false
+var god_view := false
 var torches: Array = []
 
 var _spawn := Vector2.ZERO
@@ -103,10 +104,16 @@ func _unhandled_input(event: InputEvent) -> void:
         match event.physical_keycode:
             KEY_F1:
                 debug_view = not debug_view
+            KEY_F2:
+                god_view = not god_view
+                camera.zoom = Vector2(0.18, 0.18) if god_view else Vector2(1.4, 1.4)
             KEY_K:
                 _start_panic()
             KEY_T:
                 _place_torch()
+            KEY_G:
+                world.regenerate(randi())
+                _reset()
             KEY_R:
                 _reset()
     elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
@@ -172,7 +179,7 @@ func _update_hud() -> void:
     hud.text = "ROPE  out %.1fm / max %.1fm  used %.1fm  pivots %d\n" % [
         rope.rope_out / PPM, rope.max_length / PPM, used_m, rope.pivots.size()]
     hud.text += "PANIC %d%%   torches %d   %s\n" % [int(panic.value), torches.size(), status]
-    hud.text += "A/D move·swing  SPACE jump  click=dig  J=reel  T=torch  K=rescue  R=reset  F1=debug"
+    hud.text += "A/D move·swing  SPACE jump  click=dig  J=reel  T=torch  K=rescue  R=reset  G=regen  F1=debug  F2=godview"
 
     var f := clampf(panic.value / 100.0, 0.0, 1.0)
     panic_overlay.color.a = f * 0.45

@@ -53,10 +53,17 @@ func constrain(player, _delta: float) -> void:
 
     var used := used_length(player.position)
 
-    # Feed rope out automatically as the player descends/moves away, up to max.
-    # Skipped while reeling, otherwise the auto-feed would instantly cancel it.
+    # Pay rope out as the player descends/moves away (up to max), unless reeling.
     if not reeling and used > rope_out and rope_out < max_length:
         rope_out = min(used, max_length)
+
+    # Take up slack: while standing, the winch keeps the rope snug; and reeling
+    # snaps out phantom slack first so it bites immediately instead of "reeling
+    # invisibly". Never retract while airborne otherwise -- it would ratchet the
+    # player upward on jumps and break the pendulum.
+    if (player.on_ground or reeling) and rope_out > used:
+        rope_out = used
+
     rope_out = clampf(rope_out, 0.0, max_length)
 
     # Limit the WHOLE bent path (anchor -> pivots -> player) to the paid-out

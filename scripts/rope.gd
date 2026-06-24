@@ -46,31 +46,61 @@ func used_length(player_pos: Vector2) -> float:
     return fixed_length() + _attach().distance_to(player_pos)
 
 
-func free_max() -> float:
-    return max(rope_out - fixed_length(), 8.0)
-
-
 # --- per-frame constraint (called by the player after it moves) -------------
 
 func constrain(player, _delta: float) -> void:
     _update_wrap(player.position)
 
-    var attach := _attach()
-    var to_player: Vector2 = player.position - attach
-    var dist := to_player.length()
+    var used := used_length(player.position)
 
     # Feed rope out automatically as the player descends/moves away, up to max.
     # Skipped while reeling, otherwise the auto-feed would instantly cancel it.
-    if not reeling and dist + fixed_length() > rope_out and rope_out < max_length:
-        rope_out = min(dist + fixed_length(), max_length)
+    if not reeling and used > rope_out and rope_out < max_length:
+        rope_out = min(used, max_length)
+    rope_out = clampf(rope_out, 0.0, max_length)
 
-    var fmax := free_max()
-    if dist > fmax and dist > 0.001:
-        var n := to_player / dist
-        player.position = attach + n * fmax           # taut clamp ("tranco")
-        var radial: float = player.velocity.dot(n)    # kill outward velocity,
-        if radial > 0.0:                               # keep tangential -> pendulum
-            player.velocity -= n * radial
+    # Limit the WHOLE bent path (anchor -> pivots -> player) to the paid-out
+    # rope, not just the last segment. Since rope_out <= max_length, used_length
+    # can never exceed the maximum -- and any wrapped corners the rope can't
+    # afford are dropped, so reeling never stalls in a phantom over-budget range.
+    _limit_to_budget(player, rope_out)
+
+
+# Walk anchor -> pivots... -> player allowing at most `budget` of rope. Places
+# the player at the reachable point and drops pivots beyond the budget.
+func _limit_to_budget(player, budget: float) -> void:
+    var prev := anchor
+    var remaining := budget
+    for i in range(pivots.size()):
+        var pv: Vector2 = pivots[i]["pos"]
+        var seg := prev.distance_to(pv)
+        if seg > remaining:
+            player.position = prev + (pv - prev) / seg * remaining if seg > 0.001 else prev
+            _kill_radial(player, prev)
+            for j in range(pivots.size() - 1, i - 1, -1):
+                pivots.remove_at(j)
+            return
+        remaining -= seg
+        prev = pv
+
+    var to_p: Vector2 = player.position - prev
+    var d := to_p.length()
+    if d > remaining and d > 0.001:
+        player.position = prev + to_p / d * remaining
+        _kill_radial(player, prev)
+
+
+# Remove only the outward (radial) part of velocity, keeping the tangential
+# component so the pendulum swing is preserved.
+func _kill_radial(player, pivot: Vector2) -> void:
+    var n: Vector2 = player.position - pivot
+    var dlen := n.length()
+    if dlen < 0.001:
+        return
+    n /= dlen
+    var radial: float = player.velocity.dot(n)
+    if radial > 0.0:
+        player.velocity -= n * radial
 
 
 func reel(delta: float) -> void:

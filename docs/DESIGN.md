@@ -150,3 +150,32 @@ sell, and see a wallet grow. No upgrades yet.
 - **Multiplayer** — kept architecturally possible (rope is pure logic, no
   rendering), not a near-term goal.
 - **Combat** — frozen until the mining loop proves fun.
+
+---
+
+# Part 3 — Known Issues
+
+## BUG-01 "Rope corner-clip" — SHELVED ❄️
+
+**Symptom:** in tight, blocky terrain the rope sometimes *looks* like it cuts
+through a block at a corner. Hard to reproduce, especially deep down.
+
+**What we found (with an in-game detector that measured penetration):** the
+*logical* rope does **not** enter the block — captured cases were `depth=0px`
+(no center-line sample inside a solid) but `near=true` (within ~1.6px). So it's
+the rope passing tangent to a corner while the 2px-wide line straddles it. Root
+cause: in connected terrain the geometrically-correct corner to wrap is often
+**non-convex** (2 solid neighbours) or **occluded** behind its own block, so the
+greedy wrap can only catch the one visible convex corner and the outgoing segment
+runs flush against a block edge. The earlier *deep* crossings were a separate,
+real bug — fixed by sampling LOS at 0.5px.
+
+**Attempts:** LOS sampling 8px→2px→0.5px (fixed deep crossings); bidirectional
+unwrap; stale-pivot cleanup; line width 3px→2px. Reproduction/validation harnesses
+live in the session scratchpad (`wrap_scan.gd`, `real_scan.gd`).
+
+**Status:** shelved — cosmetic-grade, rare deep down. Revisit later.
+
+**Fix candidates:** (a) Verlet/PBD rope (drapes over geometry, no explicit corner
+logic — see Phase 0); (b) extend the wrap to route around blocks with two pivots
+when the correct corner is non-convex/occluded.

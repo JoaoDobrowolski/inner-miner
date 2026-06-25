@@ -127,6 +127,19 @@ func _kill_radial(player, pivot: Vector2) -> void:
 # --- wrap / unwrap ----------------------------------------------------------
 
 func _update_wrap(player_pos: Vector2) -> void:
+    # Drop pivots whose corner no longer exists: digging a block away leaves its
+    # pivot stranded (the rope bends around an "invisible block"). Recover the grid
+    # corner from the offset pivot point and require it to still be convex.
+    var k := 0
+    while k < pivots.size():
+        var gp: Vector2 = pivots[k]["pos"]
+        var gx := int(round(gp.x / GridWorld.CELL))
+        var gy := int(round(gp.y / GridWorld.CELL))
+        if not _is_convex_corner(gx, gy):
+            pivots.remove_at(k)
+        else:
+            k += 1
+
     # Release any pivot whose two neighbours can see each other again: if the
     # straight line prev->next is clear, the rope no longer bends around that
     # corner. Checks ALL pivots (not just the player end) so an early corner near

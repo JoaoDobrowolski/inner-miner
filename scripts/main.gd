@@ -27,6 +27,12 @@ var torches: Array = []
 var claustrophobia_off := false
 var free_cam := false
 var free_cam_y := 0.0
+var block_edit := false
+
+# digging: hold a direction into a solid; it breaks after break_time seconds
+var break_time := 0.5
+var _dig_timer := 0.0
+var _dig_target := Vector2i(-2, -2)
 
 var _spawn := Vector2.ZERO
 var _last_player_pos := Vector2.ZERO
@@ -155,6 +161,15 @@ func _build_dev_menu(layer: CanvasLayer) -> void:
     var set_hj: Callable = func(v): player.high_jump_enabled = v
     dev_menu.add_toggle("High jump 2x", get_hj, set_hj)
 
+    # block editor: LMB add, RMB remove, anywhere the mouse is (no adjacency)
+    var get_be: Callable = func(): return block_edit
+    var set_be: Callable = func(v): block_edit = v
+    dev_menu.add_toggle("Block edit LMB/RMB", get_be, set_be)
+
+    var get_bt: Callable = func(): return break_time
+    var set_bt: Callable = func(v): break_time = v
+    dev_menu.add_slider("Break time s", 0.0, 2.0, 0.1, get_bt, set_bt)
+
     dev_menu.add_button("Reset to defaults", _dev_reset_defaults)
 
 
@@ -176,6 +191,8 @@ func _dev_reset_defaults() -> void:
     backpack.capacity = DEFAULT_BAG
     claustrophobia_off = false
     free_cam = false
+    block_edit = false
+    break_time = 0.5
     player.max_air_jumps = 0
     player.high_jump_enabled = false
     player.reel_hop_enabled = false
@@ -210,6 +227,8 @@ func _physics_process(delta: float) -> void:
             _start_panic()
 
     _update_camera(delta)
+    _update_block_edit()
+    _update_digging(delta)
     _update_hud()
     queue_redraw()
 
@@ -241,30 +260,59 @@ func _unhandled_input(event: InputEvent) -> void:
                 _reset()
             KEY_R:
                 _reset()
-    elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-        _try_dig(get_global_mouse_position())
 
 
-func _try_dig(world_pos: Vector2) -> void:
-    if panicking:
+# Dev block editor: paint solid with LMB, erase with RMB, anywhere on the map.
+func _update_block_edit() -> void:
+    if not block_edit:
+        return
+    # don't paint through the dev-menu panel while clicking its widgets
+    if dev_menu.visible and dev_menu.get_global_rect().has_point(get_viewport().get_mouse_position()):
+        return
+    var cell := world.world_to_cell(get_global_mouse_position())
+    if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+        world.set_cell(cell.x, cell.y, GridWorld.Cell.STONE)
+    elif Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
+        world.set_cell(cell.x, cell.y, GridWorld.Cell.AIR)
+
+
+# Directional digging: hold S (down), W (up), or A/D into a wall. The targeted
+# block breaks after break_time seconds of holding. Releasing/retargeting resets.
+func _update_digging(delta: float) -> void:
+    if panicking or block_edit:
+        _dig_timer = 0.0
+        _dig_target = Vector2i(-2, -2)
         return
     var pc := world.world_to_cell(player.position)
-    var tc := world.world_to_cell(world_pos)
-    var dx := tc.x - pc.x
-    var dy := tc.y - pc.y
-    # adjacent cells only, and never straight up (per the GDD)
-    if abs(dx) + abs(dy) != 1:
+    var target := Vector2i(-2, -2)
+    if Input.is_physical_key_pressed(KEY_S) and world.is_diggable(pc.x, pc.y + 1):
+        target = Vector2i(pc.x, pc.y + 1)
+    elif (Input.is_physical_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_LEFT)) and world.is_diggable(pc.x - 1, pc.y):
+        target = Vector2i(pc.x - 1, pc.y)
+    elif (Input.is_physical_key_pressed(KEY_D) or Input.is_physical_key_pressed(KEY_RIGHT)) and world.is_diggable(pc.x + 1, pc.y):
+        target = Vector2i(pc.x + 1, pc.y)
+    elif Input.is_physical_key_pressed(KEY_W) and world.is_diggable(pc.x, pc.y - 1):
+        target = Vector2i(pc.x, pc.y - 1)
+
+    if target == Vector2i(-2, -2):
+        _dig_timer = 0.0
+        _dig_target = target
         return
-    if dy < 0:
-        return
-    # Ore in a full backpack stays in the wall (pressure to surface) instead of
-    # being destroyed for nothing. Dirt/stone can always be dug to move around.
-    var target := world.get_cell(tc.x, tc.y)
-    if GridWorld.is_ore_cell(target) and backpack.is_full():
-        return
-    var mined := world.dig(tc.x, tc.y)
-    if GridWorld.is_ore_cell(mined):
-        backpack.add(mined)
+    if target != _dig_target:
+        _dig_target = target
+        _dig_timer = 0.0
+    _dig_timer += delta
+    if _dig_timer >= break_time:
+        # Ore in a full backpack stays in the wall instead of being wasted.
+        var tc := world.get_cell(target.x, target.y)
+        if GridWorld.is_ore_cell(tc) and backpack.is_full():
+            _dig_timer = 0.0
+            return
+        world.dig(target.x, target.y)
+        if GridWorld.is_ore_cell(tc):
+            backpack.add(tc)
+        _dig_timer = 0.0
+        _dig_target = Vector2i(-2, -2)
 
 
 func _place_torch() -> void:
@@ -318,7 +366,7 @@ func _update_hud() -> void:
     hud.text += "POS x=%.0f y=%.0f  cell=(%d,%d)  depth=%.0fm  ground=%s  vel=(%.0f,%.0f)\n" % [
         player.position.x, player.position.y, pc.x, pc.y, depth_m,
         str(player.on_ground), player.velocity.x, player.velocity.y]
-    hud.text += "A/D move·swing  SPACE jump  click=dig  J=reel  T=torch  K=rescue  R=reset  G=regen  F1=debug  F3=dev"
+    hud.text += "A/D move·swing  SPACE jump  dig: S down · W up · hold A/D into wall  J=reel  T=torch  K=rescue  R=reset  G=regen  F1=debug  F3=dev"
 
     var f := clampf(panic.value / 100.0, 0.0, 1.0)
     panic_overlay.color.a = f * 0.45
@@ -341,6 +389,14 @@ func _draw() -> void:
     draw_circle(rope.anchor, 5.0, Color(0.60, 0.40, 0.20))   # winch
     for p in rope.pivots:
         draw_circle(p["pos"], 4.0, Color(1.0, 0.30, 0.30))   # wrap corners
+
+    # dig progress feedback on the targeted block
+    if _dig_target.x >= 0 and _dig_timer > 0.0 and break_time > 0.0:
+        var dc := GridWorld.CELL
+        var r := Rect2(_dig_target.x * dc, _dig_target.y * dc, dc, dc)
+        var prog := clampf(_dig_timer / break_time, 0.0, 1.0)
+        draw_rect(r, Color(1, 1, 1, 0.12), true)
+        draw_rect(Rect2(r.position, Vector2(dc * prog, 5)), Color(1.0, 0.9, 0.3, 0.9), true)
 
     for t in torches:
         draw_circle(t, panic.torch_radius, Color(1.0, 0.7, 0.2, 0.07))   # safe zone

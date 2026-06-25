@@ -336,7 +336,7 @@ func _draw() -> void:
         pts.append(p["pos"])
     pts.append(player.position)
     for i in range(pts.size() - 1):
-        draw_line(pts[i], pts[i + 1], Color(0.20, 0.50, 1.0), 3.0)
+        draw_line(pts[i], pts[i + 1], Color(0.20, 0.50, 1.0), 2.0)
 
     draw_circle(rope.anchor, 5.0, Color(0.60, 0.40, 0.20))   # winch
     for p in rope.pivots:

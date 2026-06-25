@@ -127,14 +127,23 @@ func _kill_radial(player, pivot: Vector2) -> void:
 # --- wrap / unwrap ----------------------------------------------------------
 
 func _update_wrap(player_pos: Vector2) -> void:
-    # Release pivots no longer needed: if the previous attach can "see" the
-    # player without hitting solid tiles, the corner is doing nothing.
-    while pivots.size() > 0:
-        var prev: Vector2 = (pivots[pivots.size() - 2]["pos"] if pivots.size() >= 2 else anchor)
-        if not _los_blocked(prev, player_pos):
-            pivots.pop_back()
+    # Release any pivot whose two neighbours can see each other again: if the
+    # straight line prev->next is clear, the rope no longer bends around that
+    # corner. Checks ALL pivots (not just the player end) so an early corner near
+    # the anchor that is no longer needed can't stay "stuck".
+    var i := 0
+    while i < pivots.size():
+        var prev: Vector2 = anchor
+        if i > 0:
+            prev = pivots[i - 1]["pos"]
+        var nxt: Vector2 = player_pos
+        if i < pivots.size() - 1:
+            nxt = pivots[i + 1]["pos"]
+        if not _los_blocked(prev, nxt):
+            pivots.remove_at(i)
+            i = maxi(0, i - 1)               # neighbour changed: recheck previous
         else:
-            break
+            i += 1
 
     # Catch new corners while the rope is blocked. Guard caps runaway loops.
     var guard := 0
@@ -210,7 +219,11 @@ func _los_blocked(a: Vector2, b: Vector2) -> bool:
     var dist := d.length()
     if dist < 1.0:
         return false
-    var steps := int(dist / (GridWorld.CELL * 0.25)) + 1
+    # Step 0.5px. Corner grazes can be ~1px thin (e.g. jumping straight up glued
+    # to a wall): coarser sampling skipped over them, so the rope thought a blocked
+    # line was clear and unwrapped straight through a block. 0.5px catches the
+    # visible (>~1px) grazes while staying tolerant of sub-pixel tangents.
+    var steps := int(dist / 0.5) + 1
     for i in range(1, steps):                       # exclude both endpoints
         var t := float(i) / float(steps)
         if world.point_solid(a + d * t):

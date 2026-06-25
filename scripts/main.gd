@@ -146,6 +146,11 @@ func _build_dev_menu(layer: CanvasLayer) -> void:
     var set_aj: Callable = func(v): player.max_air_jumps = int(v)
     dev_menu.add_slider("Air jumps", 0.0, 5.0, 1.0, get_aj, set_aj)
 
+    # reel hop: 1 mid-air hop while reeling (J), refreshed on a new wall contact
+    var get_rh: Callable = func(): return player.reel_hop_enabled
+    var set_rh: Callable = func(v): player.reel_hop_enabled = v
+    dev_menu.add_toggle("Reel hop", get_rh, set_rh)
+
     var get_hj: Callable = func(): return player.high_jump_enabled
     var set_hj: Callable = func(v): player.high_jump_enabled = v
     dev_menu.add_toggle("High jump 2x", get_hj, set_hj)
@@ -173,6 +178,7 @@ func _dev_reset_defaults() -> void:
     free_cam = false
     player.max_air_jumps = 0
     player.high_jump_enabled = false
+    player.reel_hop_enabled = false
     dev_menu.refresh()
 
 

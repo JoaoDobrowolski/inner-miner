@@ -141,9 +141,10 @@ func _build_dev_menu(layer: CanvasLayer) -> void:
     var set_freecam: Callable = func(v): _set_free_cam(v)
     dev_menu.add_toggle("Free cam UP/DN", get_freecam, set_freecam)
 
-    var get_dj: Callable = func(): return player.double_jump_enabled
-    var set_dj: Callable = func(v): player.double_jump_enabled = v
-    dev_menu.add_toggle("Double jump", get_dj, set_dj)
+    # air jumps: dev-only, off by default (0). Works in free fall and while reeling.
+    var get_aj: Callable = func(): return float(player.max_air_jumps)
+    var set_aj: Callable = func(v): player.max_air_jumps = int(v)
+    dev_menu.add_slider("Air jumps", 0.0, 5.0, 1.0, get_aj, set_aj)
 
     var get_hj: Callable = func(): return player.high_jump_enabled
     var set_hj: Callable = func(v): player.high_jump_enabled = v
@@ -170,7 +171,7 @@ func _dev_reset_defaults() -> void:
     backpack.capacity = DEFAULT_BAG
     claustrophobia_off = false
     free_cam = false
-    player.double_jump_enabled = false
+    player.max_air_jumps = 0
     player.high_jump_enabled = false
     dev_menu.refresh()
 

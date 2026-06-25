@@ -18,7 +18,7 @@ var rewinding := false
 var he := Vector2(11, 14)           # half extents (< 16 so it fits a 32px cell / 1-wide tunnel)
 
 # Dev-toggleable abilities (off by default; flipped from the dev menu).
-var double_jump_enabled := false
+var max_air_jumps := 0              # air jumps (dev-only; 0 = base game, single ground jump)
 var high_jump_enabled := false      # ~2x jump height (height scales with v^2)
 var _air_jumps_used := 0
 
@@ -88,7 +88,7 @@ func _try_jump() -> void:
     if on_ground:
         velocity.y = jv
         _air_jumps_used = 0
-    elif double_jump_enabled and _air_jumps_used < 1:
+    elif _air_jumps_used < max_air_jumps:
         velocity.y = jv
         _air_jumps_used += 1
 

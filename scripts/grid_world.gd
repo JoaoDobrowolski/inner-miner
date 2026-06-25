@@ -80,11 +80,17 @@ func is_diggable(cx: int, cy: int) -> bool:
     return c != Cell.AIR and c != Cell.BEDROCK
 
 
-func dig(cx: int, cy: int) -> bool:
+static func is_ore_cell(v: int) -> bool:
+    return v == Cell.COAL or v == Cell.COPPER or v == Cell.IRON or v == Cell.CRYSTAL
+
+
+# Mine a cell. Returns the cell type that was removed, or -1 if nothing diggable.
+func dig(cx: int, cy: int) -> int:
     if is_diggable(cx, cy):
+        var mined := get_cell(cx, cy)
         set_cell(cx, cy, Cell.AIR)
-        return true
-    return false
+        return mined
+    return -1
 
 
 func world_to_cell(p: Vector2) -> Vector2i:

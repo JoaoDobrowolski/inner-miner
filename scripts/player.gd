@@ -17,6 +17,11 @@ var on_ground := false
 var rewinding := false
 var he := Vector2(11, 14)           # half extents (< 16 so it fits a 32px cell / 1-wide tunnel)
 
+# Dev-toggleable abilities (off by default; flipped from the dev menu).
+var double_jump_enabled := false
+var high_jump_enabled := false      # ~2x jump height (height scales with v^2)
+var _air_jumps_used := 0
+
 var world: GridWorld
 var rope: Rope
 
@@ -33,6 +38,7 @@ func _physics_process(delta: float) -> void:
         return                       # rope drives position during the rescue
 
     var frame_start := position
+    var prev_ground := on_ground
     rope.snapshot()                  # last known-good rope state
 
     _read_horizontal(delta)
@@ -56,6 +62,9 @@ func _physics_process(delta: float) -> void:
         rope.relax(self)
         on_ground = _check_below()
 
+    if on_ground and not prev_ground:
+        _air_jumps_used = 0          # landed: refresh air jumps
+
     # Teleport guard: a single frame can never move the player more than a cell.
     # If the rope/collision produced an implausible jump, it's a bad state --
     # roll BOTH the player and the rope back to the last valid frame instead of
@@ -69,8 +78,19 @@ func _physics_process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
     if event is InputEventKey and event.pressed and not event.echo:
         if event.physical_keycode == KEY_SPACE or event.physical_keycode == KEY_W:
-            if on_ground and not rewinding:
-                velocity.y = JUMP_VELOCITY
+            _try_jump()
+
+
+func _try_jump() -> void:
+    if rewinding:
+        return
+    var jv := JUMP_VELOCITY * (sqrt(2.0) if high_jump_enabled else 1.0)
+    if on_ground:
+        velocity.y = jv
+        _air_jumps_used = 0
+    elif double_jump_enabled and _air_jumps_used < 1:
+        velocity.y = jv
+        _air_jumps_used += 1
 
 
 func _read_horizontal(delta: float) -> void:

@@ -4,6 +4,8 @@ extends Node2D
 
 const PPM := 16.0                   # pixels per meter (cell 32px = 2m), for display only
 const MAX_ROPE_METERS := 30.0
+const DEFAULT_ZOOM := 1.4
+const DEFAULT_BAG := 20
 
 var world: GridWorld
 var player: Player
@@ -13,12 +15,18 @@ var hud: Label
 var panic: PanicSystem
 var panic_overlay: ColorRect
 var panic_fill: ColorRect
+var backpack: Backpack
+var dev_menu: DevMenu
 
 var panicking := false
 var emergency := false
 var debug_view := false
-var god_view := false
 var torches: Array = []
+
+# dev-mode state
+var claustrophobia_off := false
+var free_cam := false
+var free_cam_y := 0.0
 
 var _spawn := Vector2.ZERO
 var _last_player_pos := Vector2.ZERO
@@ -34,6 +42,7 @@ func _ready() -> void:
     var anchor_pos := Vector2((sx + 0.5) * GridWorld.CELL, 1.0 * GridWorld.CELL)
     rope = Rope.new(world, anchor_pos, MAX_ROPE_METERS * PPM)
     panic = PanicSystem.new()
+    backpack = Backpack.new()
 
     player = Player.new()
     add_child(player)
@@ -42,9 +51,10 @@ func _ready() -> void:
     player.setup(world, rope)
 
     camera = Camera2D.new()
-    camera.zoom = Vector2(1.4, 1.4)
+    camera.zoom = Vector2(DEFAULT_ZOOM, DEFAULT_ZOOM)
     camera.position_smoothing_enabled = true
-    player.add_child(camera)
+    add_child(camera)                   # child of main, not player: free cam needs it
+    camera.global_position = player.position
     camera.make_current()
 
     _build_hud()
@@ -62,26 +72,123 @@ func _build_hud() -> void:
     panic_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
     layer.add_child(panic_overlay)
 
+    # panic bar pinned to the bottom-left, clear of the top-left text HUD
     var bar_bg := ColorRect.new()
     bar_bg.color = Color(0, 0, 0, 0.5)
-    bar_bg.position = Vector2(12, 84)
-    bar_bg.size = Vector2(220, 18)
+    bar_bg.anchor_top = 1.0
+    bar_bg.anchor_bottom = 1.0
+    bar_bg.offset_left = 12
+    bar_bg.offset_right = 232
+    bar_bg.offset_top = -34
+    bar_bg.offset_bottom = -16
     bar_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
     layer.add_child(bar_bg)
 
     panic_fill = ColorRect.new()
     panic_fill.color = Color(0.2, 0.8, 0.3)
-    panic_fill.position = Vector2(14, 86)
-    panic_fill.size = Vector2(0, 14)
+    panic_fill.anchor_top = 1.0
+    panic_fill.anchor_bottom = 1.0
+    panic_fill.offset_left = 14
+    panic_fill.offset_right = 14
+    panic_fill.offset_top = -32
+    panic_fill.offset_bottom = -18
     panic_fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
     layer.add_child(panic_fill)
 
+    # text HUD: span the full width and wrap so long lines never run off-screen
     hud = Label.new()
-    hud.position = Vector2(12, 12)
+    hud.offset_left = 12
+    hud.offset_top = 12
+    hud.anchor_right = 1.0
+    hud.offset_right = -12
+    hud.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    hud.add_theme_font_size_override("font_size", 13)
     hud.add_theme_color_override("font_color", Color.WHITE)
     hud.add_theme_color_override("font_outline_color", Color.BLACK)
-    hud.add_theme_constant_override("outline_size", 5)
+    hud.add_theme_constant_override("outline_size", 4)
     layer.add_child(hud)
+
+    _build_dev_menu(layer)
+
+
+func _build_dev_menu(layer: CanvasLayer) -> void:
+    dev_menu = DevMenu.new()
+    dev_menu.anchor_left = 1.0
+    dev_menu.anchor_right = 1.0
+    dev_menu.offset_left = -320
+    dev_menu.offset_right = -12
+    dev_menu.offset_top = 12
+    layer.add_child(dev_menu)
+
+    # rope length: free numeric input (meters), uncapped
+    var get_rope: Callable = func(): return rope.max_length / PPM
+    var set_rope: Callable = func(v): rope.max_length = maxf(1.0, v) * PPM
+    dev_menu.add_number("Rope max m", get_rope, set_rope)
+
+    var get_zoom: Callable = func(): return camera.zoom.x
+    var set_zoom: Callable = func(v): camera.zoom = Vector2(v, v)
+    dev_menu.add_slider("Zoom", 0.1, 2.0, 0.05, get_zoom, set_zoom)
+
+    var get_bag: Callable = func(): return float(backpack.capacity)
+    var set_bag: Callable = func(v): backpack.capacity = int(v)
+    dev_menu.add_slider("Bag cap", 5.0, 200.0, 5.0, get_bag, set_bag)
+
+    var get_claustro: Callable = func(): return claustrophobia_off
+    var set_claustro: Callable = func(v): _set_claustro_off(v)
+    dev_menu.add_toggle("Claustro off", get_claustro, set_claustro)
+
+    var get_freecam: Callable = func(): return free_cam
+    var set_freecam: Callable = func(v): _set_free_cam(v)
+    dev_menu.add_toggle("Free cam UP/DN", get_freecam, set_freecam)
+
+    var get_dj: Callable = func(): return player.double_jump_enabled
+    var set_dj: Callable = func(v): player.double_jump_enabled = v
+    dev_menu.add_toggle("Double jump", get_dj, set_dj)
+
+    var get_hj: Callable = func(): return player.high_jump_enabled
+    var set_hj: Callable = func(v): player.high_jump_enabled = v
+    dev_menu.add_toggle("High jump 2x", get_hj, set_hj)
+
+    dev_menu.add_button("Reset to defaults", _dev_reset_defaults)
+
+
+func _set_claustro_off(v: bool) -> void:
+    claustrophobia_off = v
+    if v:
+        panic.value = 0.0               # clear the vignette immediately
+
+
+func _set_free_cam(v: bool) -> void:
+    free_cam = v
+    if v:
+        free_cam_y = camera.global_position.y
+
+
+func _dev_reset_defaults() -> void:
+    rope.max_length = MAX_ROPE_METERS * PPM
+    camera.zoom = Vector2(DEFAULT_ZOOM, DEFAULT_ZOOM)
+    backpack.capacity = DEFAULT_BAG
+    claustrophobia_off = false
+    free_cam = false
+    player.double_jump_enabled = false
+    player.high_jump_enabled = false
+    dev_menu.refresh()
+
+
+# Free cam detaches vertical framing from the player: UP/DOWN pan across the whole
+# map (pan faster when zoomed out). Otherwise the camera just follows the player.
+func _update_camera(delta: float) -> void:
+    if free_cam:
+        var dir := 0.0
+        if Input.is_physical_key_pressed(KEY_UP):
+            dir -= 1.0
+        if Input.is_physical_key_pressed(KEY_DOWN):
+            dir += 1.0
+        var speed := 600.0 / camera.zoom.y
+        free_cam_y = clampf(free_cam_y + dir * speed * delta, 0.0, GridWorld.H * GridWorld.CELL)
+        camera.global_position = Vector2(player.position.x, free_cam_y)
+    else:
+        camera.global_position = player.position
 
 
 func _physics_process(delta: float) -> void:
@@ -89,12 +196,13 @@ func _physics_process(delta: float) -> void:
     if panicking:
         if rope.rewind_step(player, delta):
             _end_panic()
-    else:
+    elif not claustrophobia_off:
         panic.update(delta, player.position, world, torches)
         if panic.value >= 100.0:
             emergency = true
             _start_panic()
 
+    _update_camera(delta)
     _update_hud()
     queue_redraw()
 
@@ -115,9 +223,8 @@ func _unhandled_input(event: InputEvent) -> void:
         match event.physical_keycode:
             KEY_F1:
                 debug_view = not debug_view
-            KEY_F2:
-                god_view = not god_view
-                camera.zoom = Vector2(0.18, 0.18) if god_view else Vector2(1.4, 1.4)
+            KEY_F3:
+                dev_menu.toggle()
             KEY_K:
                 _start_panic()
             KEY_T:
@@ -143,7 +250,14 @@ func _try_dig(world_pos: Vector2) -> void:
         return
     if dy < 0:
         return
-    world.dig(tc.x, tc.y)
+    # Ore in a full backpack stays in the wall (pressure to surface) instead of
+    # being destroyed for nothing. Dirt/stone can always be dug to move around.
+    var target := world.get_cell(tc.x, tc.y)
+    if GridWorld.is_ore_cell(target) and backpack.is_full():
+        return
+    var mined := world.dig(tc.x, tc.y)
+    if GridWorld.is_ore_cell(mined):
+        backpack.add(mined)
 
 
 func _place_torch() -> void:
@@ -190,16 +304,18 @@ func _update_hud() -> void:
     hud.text = "ROPE  out %.1fm / max %.1fm  used %.1fm  pivots %d\n" % [
         rope.rope_out / PPM, rope.max_length / PPM, used_m, rope.pivots.size()]
     hud.text += "PANIC %d%%   torches %d   %s\n" % [int(panic.value), torches.size(), status]
+    var bag_warn := "  [FULL]" if backpack.is_full() else ""
+    hud.text += "BAG %d/%d  value $%d%s\n" % [backpack.count(), backpack.capacity, backpack.value(), bag_warn]
     var pc := world.world_to_cell(player.position)
     var depth_m := maxf(0.0, (player.position.y / GridWorld.CELL - GridWorld.GROUND) * 2.0)
     hud.text += "POS x=%.0f y=%.0f  cell=(%d,%d)  depth=%.0fm  ground=%s  vel=(%.0f,%.0f)\n" % [
         player.position.x, player.position.y, pc.x, pc.y, depth_m,
         str(player.on_ground), player.velocity.x, player.velocity.y]
-    hud.text += "A/D move·swing  SPACE jump  click=dig  J=reel  T=torch  K=rescue  R=reset  G=regen  F1=debug  F2=godview"
+    hud.text += "A/D move·swing  SPACE jump  click=dig  J=reel  T=torch  K=rescue  R=reset  G=regen  F1=debug  F3=dev"
 
     var f := clampf(panic.value / 100.0, 0.0, 1.0)
     panic_overlay.color.a = f * 0.45
-    panic_fill.size.x = 216.0 * f
+    panic_fill.offset_right = panic_fill.offset_left + 216.0 * f
     panic_fill.color = Color(0.2, 0.8, 0.3).lerp(Color(0.9, 0.1, 0.1), f)
 
 

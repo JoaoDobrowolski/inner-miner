@@ -88,18 +88,20 @@ patched repeatedly (budget clamp, teleport guard, depenetration). If fragility
 keeps biting, the root-cause fix is a **Verlet/PBD rope** — deferred, not free
 (length accounting + rewind get messier). Tracked, not scheduled.
 
-## Phase 1 — Core economy loop 🔨 (NEXT)
+## Phase 1 — Core economy loop 🔨 (IN PROGRESS)
 
 The smallest loop that makes the game *a game*: mine → carry → sell → spend.
 
-1. **Ore yields on dig.** Each mined cell type (coal/copper/iron/crystal) yields an
-   item with a base value. Wire into `grid_world.dig()` returning what was mined.
-2. **Backpack / inventory** with capacity. Mined ore accumulates; capacity is a
-   future stat. Full backpack = can't mine more (pressure to surface).
-3. **Sell at surface.** Returning to the surface (or a sell zone) converts the
-   backpack to currency. HUD shows carried value vs. wallet.
-4. **Rescue penalty becomes real.** Emergency rescue (panic 100%) costs you — drop
-   part/all of the backpack. This is what makes claustrophobia *matter*.
+1. ✅ **Ore yields on dig.** `grid_world.dig()` returns the mined cell type;
+   `GridWorld.is_ore_cell()` filters ore (coal/copper/iron/crystal). Dirt/stone
+   yield nothing.
+2. ✅ **Backpack** (`backpack.gd`, RefCounted) with flat capacity (20) and per-ore
+   sell values. Ore in a **full** backpack stays in the wall (no waste); dirt/stone
+   stay diggable. HUD shows `BAG count/cap  value $`.
+3. 🔨 **Sell at surface.** Returning to the surface (or a sell zone) converts the
+   backpack to currency. HUD shows wallet.
+4. 📋 **Rescue penalty becomes real.** Emergency rescue (panic 100%) costs you —
+   drop part/all of the backpack. This is what makes claustrophobia *matter*.
 
 Deliverable: a player can descend, mine ore, risk the panic threshold, surface,
 sell, and see a wallet grow. No upgrades yet.

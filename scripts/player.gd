@@ -10,6 +10,7 @@ const JUMP_VELOCITY := -380.0       # ~1 cell high; upgradeable later in the lor
 const MAX_FALL := 900.0
 const AIR_SWING_ACCEL := 360.0
 const AIR_SWING_MAX := 280.0
+const MAX_FRAME_MOVE := 40.0        # bigger than any legit per-frame move (~16px); above = teleport
 
 var velocity := Vector2.ZERO
 var on_ground := false
@@ -31,6 +32,9 @@ func _physics_process(delta: float) -> void:
     if rewinding:
         return                       # rope drives position during the rescue
 
+    var frame_start := position
+    rope.snapshot()                  # last known-good rope state
+
     _read_horizontal(delta)
     velocity.y = min(velocity.y + GRAVITY * delta, MAX_FALL)
 
@@ -41,6 +45,25 @@ func _physics_process(delta: float) -> void:
 
     on_ground = _check_below()
     rope.constrain(self, delta)
+
+    # The rope sets the player's position directly and can park the body inside a
+    # solid tile (e.g. reeling tight around a corner). The per-axis resolvers only
+    # eject a *moving* body, so a stationary embedded player would stay stuck until
+    # it jumped. Push out of any overlap every frame, regardless of velocity.
+    if _depenetrate():
+        # Don't let the rope claim a length shorter than where the player can
+        # physically be, otherwise it keeps pulling into the wall (jitter).
+        rope.relax(self)
+        on_ground = _check_below()
+
+    # Teleport guard: a single frame can never move the player more than a cell.
+    # If the rope/collision produced an implausible jump, it's a bad state --
+    # roll BOTH the player and the rope back to the last valid frame instead of
+    # flinging the player (e.g. up to the surface). Worst case: a frozen frame.
+    if frame_start.distance_to(position) > MAX_FRAME_MOVE:
+        position = frame_start
+        velocity = Vector2.ZERO
+        rope.restore()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -127,6 +150,42 @@ func _check_below() -> bool:
     var lx := floori((position.x - he.x + 1.0) / c)
     var rx := floori((position.x + he.x - 1.0) / c)
     return world.is_solid(lx, cy) or world.is_solid(rx, cy)
+
+
+# Push the player out of any solid it overlaps, along the axis of least
+# penetration (per overlapping cell, greedily, a few iterations to converge).
+# Velocity is left untouched so a queued jump still works. Returns true if moved.
+func _depenetrate() -> bool:
+    var c := GridWorld.CELL
+    var half := c * 0.5
+    var moved := false
+    for _iter in range(4):
+        var solids := _overlapping_solids()
+        if solids.is_empty():
+            break
+        var best_push := Vector2.ZERO
+        var best_pen := INF
+        for cell in solids:
+            var cc: Vector2i = cell
+            var dx: float = position.x - (cc.x * c + half)
+            var dy: float = position.y - (cc.y * c + half)
+            var px: float = (he.x + half) - absf(dx)        # overlap depth on x
+            var py: float = (he.y + half) - absf(dy)        # overlap depth on y
+            if px <= 0.0 or py <= 0.0:
+                continue
+            if px < py:
+                if px < best_pen:
+                    best_pen = px
+                    best_push = Vector2((signf(dx) if dx != 0.0 else 1.0) * (px + 0.01), 0.0)
+            else:
+                if py < best_pen:
+                    best_pen = py
+                    best_push = Vector2(0.0, (signf(dy) if dy != 0.0 else -1.0) * (py + 0.01))
+        if best_pen == INF:
+            break
+        position += best_push
+        moved = true
+    return moved
 
 
 func _draw() -> void:

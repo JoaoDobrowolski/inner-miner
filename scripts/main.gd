@@ -21,6 +21,8 @@ var god_view := false
 var torches: Array = []
 
 var _spawn := Vector2.ZERO
+var _last_player_pos := Vector2.ZERO
+var _have_last := false
 
 
 func _ready() -> void:
@@ -88,8 +90,6 @@ func _physics_process(delta: float) -> void:
         if rope.rewind_step(player, delta):
             _end_panic()
     else:
-        if rope.reeling:
-            rope.reel(delta)
         panic.update(delta, player.position, world, torches)
         if panic.value >= 100.0:
             emergency = true
@@ -97,6 +97,17 @@ func _physics_process(delta: float) -> void:
 
     _update_hud()
     queue_redraw()
+
+    # Teleport detector: a single-frame jump bigger than ~1.5 cells while not in
+    # a rescue should never happen. Log the rope state so the bug can be traced.
+    if _have_last and not panicking:
+        var jump := _last_player_pos.distance_to(player.position)
+        if jump > 48.0:
+            print("[TELEPORT] jump=%.0fpx  reeling=%s on_ground=%s pivots=%d rope_out=%.1f used=%.1f  from=%s to=%s" % [
+                jump, str(rope.reeling), str(player.on_ground), rope.pivots.size(),
+                rope.rope_out, rope.used_length(player.position), str(_last_player_pos), str(player.position)])
+    _last_player_pos = player.position
+    _have_last = true
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -179,6 +190,11 @@ func _update_hud() -> void:
     hud.text = "ROPE  out %.1fm / max %.1fm  used %.1fm  pivots %d\n" % [
         rope.rope_out / PPM, rope.max_length / PPM, used_m, rope.pivots.size()]
     hud.text += "PANIC %d%%   torches %d   %s\n" % [int(panic.value), torches.size(), status]
+    var pc := world.world_to_cell(player.position)
+    var depth_m := maxf(0.0, (player.position.y / GridWorld.CELL - GridWorld.GROUND) * 2.0)
+    hud.text += "POS x=%.0f y=%.0f  cell=(%d,%d)  depth=%.0fm  ground=%s  vel=(%.0f,%.0f)\n" % [
+        player.position.x, player.position.y, pc.x, pc.y, depth_m,
+        str(player.on_ground), player.velocity.x, player.velocity.y]
     hud.text += "A/D move·swing  SPACE jump  click=dig  J=reel  T=torch  K=rescue  R=reset  G=regen  F1=debug  F2=godview"
 
     var f := clampf(panic.value / 100.0, 0.0, 1.0)

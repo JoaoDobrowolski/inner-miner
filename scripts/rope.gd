@@ -46,30 +46,44 @@ func used_length(player_pos: Vector2) -> float:
     return fixed_length() + _attach().distance_to(player_pos)
 
 
+# Snapshot / restore the rope state so the player can roll back a frame that
+# produced an invalid (teleporting) result -- keeps position and rope consistent.
+var _snap_pivots: Array = []
+var _snap_rope_out := 0.0
+
+func snapshot() -> void:
+    _snap_pivots = pivots.duplicate(true)
+    _snap_rope_out = rope_out
+
+func restore() -> void:
+    pivots = _snap_pivots.duplicate(true)
+    rope_out = _snap_rope_out
+
+
+# After the player was pushed out of a solid, the rope can't be shorter than the
+# straight-line distance to where the player actually is -- otherwise it keeps
+# yanking the body back into the wall. Grow rope_out to match the real position.
+func relax(player) -> void:
+    var pos: Vector2 = player.position
+    rope_out = clampf(maxf(rope_out, used_length(pos)), min_out, max_length)
+
+
 # --- per-frame constraint (called by the player after it moves) -------------
 
-func constrain(player, _delta: float) -> void:
+func constrain(player, delta: float) -> void:
     _update_wrap(player.position)
 
     var used := used_length(player.position)
 
-    # Pay rope out as the player descends/moves away (up to max), unless reeling.
-    if not reeling and used > rope_out and rope_out < max_length:
+    # rope_out is always relative to the player's current position (no drift).
+    if reeling:
+        rope_out = max(used - reel_speed * delta, min_out)
+    elif player.on_ground:
+        rope_out = min(used, max_length)
+    elif used > rope_out:
         rope_out = min(used, max_length)
 
-    # Take up slack: while standing, the winch keeps the rope snug; and reeling
-    # snaps out phantom slack first so it bites immediately instead of "reeling
-    # invisibly". Never retract while airborne otherwise -- it would ratchet the
-    # player upward on jumps and break the pendulum.
-    if (player.on_ground or reeling) and rope_out > used:
-        rope_out = used
-
     rope_out = clampf(rope_out, 0.0, max_length)
-
-    # Limit the WHOLE bent path (anchor -> pivots -> player) to the paid-out
-    # rope, not just the last segment. Since rope_out <= max_length, used_length
-    # can never exceed the maximum -- and any wrapped corners the rope can't
-    # afford are dropped, so reeling never stalls in a phantom over-budget range.
     _limit_to_budget(player, rope_out)
 
 
@@ -110,10 +124,6 @@ func _kill_radial(player, pivot: Vector2) -> void:
         player.velocity -= n * radial
 
 
-func reel(delta: float) -> void:
-    rope_out = max(rope_out - reel_speed * delta, min_out + fixed_length())
-
-
 # --- wrap / unwrap ----------------------------------------------------------
 
 func _update_wrap(player_pos: Vector2) -> void:
@@ -133,6 +143,9 @@ func _update_wrap(player_pos: Vector2) -> void:
         var attach := _attach()
         var corner = _find_wrap_corner(attach, player_pos)
         if corner == null:
+            break
+        # Don't wrap a corner the rope can't afford to reach.
+        if fixed_length() + attach.distance_to(corner) > rope_out:
             break
         var s: float = (corner - attach).cross(player_pos - corner)
         pivots.append({ "pos": corner, "sign": signf(s) })

@@ -83,6 +83,18 @@ func add_button(label_text: String, action: Callable) -> void:
     _rows.add_child(btn)
 
 
+# Two buttons side by side on one row (left/right).
+func add_button_row(label_a: String, action_a: Callable, label_b: String, action_b: Callable) -> void:
+    var row := HBoxContainer.new()
+    for pair in [[label_a, action_a], [label_b, action_b]]:
+        var btn := Button.new()
+        btn.text = pair[0]
+        btn.pressed.connect(pair[1])
+        btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        row.add_child(btn)
+    _rows.add_child(row)
+
+
 func refresh() -> void:
     for r in _refreshers:
         r.call()

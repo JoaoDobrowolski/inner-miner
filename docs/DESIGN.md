@@ -155,27 +155,43 @@ sell, and see a wallet grow. No upgrades yet.
 
 # Part 3 — Known Issues
 
-## BUG-01 "Rope corner-clip" — SHELVED ❄️
+## The rope has two backends — dev toggle "Verlet rope (A/B)"
 
-**Symptom:** in tight, blocky terrain the rope sometimes *looks* like it cuts
-through a block at a corner. Hard to reproduce, especially deep down.
+- **Mode A — taut polyline** (`scripts/rope.gd`): the default. Anchor → convex
+  tile-corner pivots → player; wraps/unwraps by line-of-sight.
+- **Mode B — Verlet chain** (`scripts/rope_verlet.gd`): the in-progress
+  replacement. A 36-point mass chain that drapes over the tiles (point + segment
+  collision) with no corner/LOS logic. Toggle live from the dev menu. The player
+  moves under its own physics; the rope is a leash that only acts at full
+  extension (decoupled, so it doesn't drag — an earlier "viscous" version did).
 
-**What we found (with an in-game detector that measured penetration):** the
-*logical* rope does **not** enter the block — captured cases were `depth=0px`
-(no center-line sample inside a solid) but `near=true` (within ~1.6px). So it's
-the rope passing tangent to a corner while the 2px-wide line straddles it. Root
-cause: in connected terrain the geometrically-correct corner to wrap is often
-**non-convex** (2 solid neighbours) or **occluded** behind its own block, so the
-greedy wrap can only catch the one visible convex corner and the outgoing segment
-runs flush against a block edge. The earlier *deep* crossings were a separate,
-real bug — fixed by sampling LOS at 0.5px.
+The full blow-by-blow of every rope attempt lives in the project memory
+(`inner-miner-rope-status`).
 
-**Attempts:** LOS sampling 8px→2px→0.5px (fixed deep crossings); bidirectional
-unwrap; stale-pivot cleanup; line width 3px→2px. Reproduction/validation harnesses
-live in the session scratchpad (`wrap_scan.gd`, `real_scan.gd`).
+## BUG-01 "Rope corner-clip" (Mode A) — root cause found; superseded by Mode B
 
-**Status:** shelved — cosmetic-grade, rare deep down. Revisit later.
+**Symptom:** in blocky terrain the rope *looks* like it cuts a block at a corner.
+Only near a corner; the player is usually resting (static).
 
-**Fix candidates:** (a) Verlet/PBD rope (drapes over geometry, no explicit corner
-logic — see Phase 0); (b) extend the wrap to route around blocks with two pivots
-when the correct corner is non-convex/occluded.
+**Root cause (confirmed by an in-game px-depth probe + reason-logged release):**
+the last pivot is dropped the instant `_los_blocked(prev, player)` reads clear,
+but the 0.5px LOS sampling **steps over** a single-point corner-vertex graze (the
+chord enters the block for a <0.5px sliver). The center-line never really goes
+inside (solid-chord ≈ 0 — which is why penetration probes stayed silent), so only
+the 2px-wide *drawn* line straddles the corner. This is a **structural** limit of
+the polyline: killing the graze needs a *sensitive* LOS, killing pivot oscillation
+needs a *tolerant* LOS — the 0.5px sampling is the deliberate trade (accept the
+graze to avoid oscillation). No polyline patch wins both; margin/hysteresis
+attempts all failed in real play.
+
+**Resolution:** Mode B (Verlet) has no wrap/LOS decision, so neither graze nor
+oscillation. Validated to drape ≤1.4px on the exact failing geometry.
+
+## Mode B (Verlet) — open issues (being tuned)
+
+- **B-01 — wrap unwinds over blocks:** running over a block (or several) makes the
+  rope that was wrapped around them come undone.
+- **B-02 — reel (J) path:** J does not pull the player toward the last contact —
+  it seems related to it but takes a weird path.
+- **B-03 — still flexed at the limit:** when the rope reaches max length it still
+  looks bent. TBD: fix visually only, or in the rope physics.

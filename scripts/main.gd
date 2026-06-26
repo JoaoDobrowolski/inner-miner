@@ -224,7 +224,7 @@ func _build_dev_menu(layer: CanvasLayer) -> void:
     var set_bt: Callable = func(v): break_time = v
     dev_menu.add_slider("Break time s", 0.0, 2.0, 0.1, get_bt, set_bt)
 
-    dev_menu.add_button("Reset to defaults", _dev_reset_defaults)
+    dev_menu.add_button_row("Reset to defaults", _dev_reset_defaults, "GOD MODE", _dev_god_mode)
 
 
 func _set_claustro_off(v: bool) -> void:
@@ -237,6 +237,18 @@ func _set_free_cam(v: bool) -> void:
     free_cam = v
     if v:
         free_cam_y = camera.global_position.y
+
+
+# Dev convenience: flip everything on for free roaming/testing.
+func _dev_god_mode() -> void:
+    rope.max_length = 500.0 * PPM
+    backpack.capacity = 200
+    _set_claustro_off(true)
+    player.max_air_jumps = 5
+    player.reel_hop_enabled = true
+    player.high_jump_enabled = true
+    block_edit = true
+    dev_menu.refresh()
 
 
 func _dev_reset_defaults() -> void:

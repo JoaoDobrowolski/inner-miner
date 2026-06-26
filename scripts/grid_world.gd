@@ -10,9 +10,21 @@ const CELL := 32          # pixels per cell (1 cell = 2m in the lore -> 16 px/m)
 const W := 48             # width in cells (GDD target 40-60)
 const H := 220            # depth in cells
 const GROUND := 6         # first solid row (rows above are sky)
-const FUNNELS := [60, 120, 180]   # depths where the map funnels to ~3 wide (biome gates)
+const FUNNELS := [60, 120, 180]   # depths where the map necks down to a gate (boss rooms)
 
-enum Cell { AIR, DIRT, STONE, BEDROCK, COAL, COPPER, IRON, CRYSTAL }
+# --- funnel walls (unbreakable) --------------------------------------------
+# The map funnels with unbreakable DIRT so the player can't run to the map edges
+# early. Pickaxe-not-shovel framing: dirt/grass can't be mined, only STONE can.
+# The breakable interior channel widens from the 2-wide entry hole down to nearly
+# the full map width, then necks back to a gate at each FUNNELS depth.
+const EDGE := 2                  # permanent bedrock border (cols per side)
+const WALL_MAX := (W >> 1) - EDGE   # widest the interior half-channel ever gets (22)
+const INTRO_ROWS := 30           # rows over which the top hole widens to WALL_MAX
+const GATE_HALF := 1             # interior half-width at a funnel throat (~2 wide)
+const FUNNEL_RAMP := 8           # rows on each side of a FUNNELS row to neck down
+const STALL_MAX := 3             # more than this many flat rows forces a wall step
+
+enum Cell { AIR, DIRT, STONE, BEDROCK, COAL, COPPER, IRON, CRYSTAL, GRASS }
 
 @export var world_seed := 1337
 
@@ -20,10 +32,12 @@ var cells: PackedByteArray = PackedByteArray()
 var rng: RandomNumberGenerator
 var _cave_noise: FastNoiseLite
 var _ore_noise: FastNoiseLite
-var _margin_noise: FastNoiseLite
+var _wl: PackedInt32Array = PackedInt32Array()   # interior left boundary col, per row
+var _wr: PackedInt32Array = PackedInt32Array()   # interior right boundary col (exclusive), per row
 
 var _colors := {
-    Cell.DIRT: Color(0.55, 0.36, 0.20),
+    Cell.GRASS: Color(0.30, 0.55, 0.24),
+    Cell.DIRT: Color(0.45, 0.31, 0.18),
     Cell.STONE: Color(0.42, 0.43, 0.50),
     Cell.BEDROCK: Color(0.12, 0.12, 0.15),
     Cell.COAL: Color(0.18, 0.18, 0.20),
@@ -76,8 +90,10 @@ func is_solid(cx: int, cy: int) -> bool:
 
 
 func is_diggable(cx: int, cy: int) -> bool:
+    # Only STONE and ore are breakable. GRASS and DIRT are the unbreakable funnel
+    # (pickaxe can't dig packed earth); BEDROCK is the map border.
     var c := get_cell(cx, cy)
-    return c != Cell.AIR and c != Cell.BEDROCK
+    return c == Cell.STONE or is_ore_cell(c)
 
 
 static func is_ore_cell(v: int) -> bool:
@@ -119,11 +135,11 @@ func _generate() -> void:
     rng = RandomNumberGenerator.new()
     rng.seed = world_seed
     _setup_noise()
+    _compute_walls()
 
     for cy in range(H):
-        var m := _margins(cy)
         for cx in range(W):
-            cells[_idx(cx, cy)] = _gen_cell(cx, cy, m.x, m.y)
+            cells[_idx(cx, cy)] = _gen_cell(cx, cy)
 
     _carve_start_shaft()
     _stamp_chunk(TREASURE_ROOM, int(W / 2) - 3, 100)
@@ -141,43 +157,94 @@ func _setup_noise() -> void:
     _ore_noise.frequency = 0.12
     _ore_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
 
-    _margin_noise = FastNoiseLite.new()
-    _margin_noise.seed = world_seed + 19
-    _margin_noise.frequency = 0.08
-    _margin_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+
+# Precompute the interior (breakable) channel boundaries per row. Each side is an
+# independent random walk that drifts toward a depth-dependent target half-width
+# (_wall_target) and is forced to move after STALL_MAX flat rows, so the dirt
+# walls look organic and never sit as a long straight tube.
+func _compute_walls() -> void:
+    _wl.resize(H)
+    _wr.resize(H)
+    var cx := W >> 1
+    var wrng := RandomNumberGenerator.new()
+    wrng.seed = world_seed + 101
+    var hl := 1
+    var hr := 1
+    var sl := 0
+    var sr := 0
+    for cy in range(H):
+        if cy <= GROUND:
+            hl = 1; hr = 1; sl = 0; sr = 0          # hold the 2-wide entry hole at the cap
+            _wl[cy] = cx - 1
+            _wr[cy] = cx + 1
+            continue
+        var t := _wall_target(cy)
+        var rl := _walk_step(hl, t, wrng, sl)
+        hl = rl.x; sl = rl.y
+        var rr := _walk_step(hr, t, wrng, sr)
+        hr = rr.x; sr = rr.y
+        _wl[cy] = cx - hl
+        _wr[cy] = cx + hr
 
 
-func _in_funnel(cy: int) -> bool:
+# Target interior half-width at a row: ramps up from the entry hole over
+# INTRO_ROWS to WALL_MAX, then necks down to GATE_HALF around each FUNNELS depth.
+func _wall_target(cy: int) -> int:
+    var d := cy - GROUND
+    if d < 0:
+        return WALL_MAX
+    var base := int(round(lerpf(1.0, float(WALL_MAX), clampf(float(d) / float(INTRO_ROWS), 0.0, 1.0))))
     for fy in FUNNELS:
-        if absi(cy - fy) <= 2:
-            return true
-    return false
+        var dist := absi(cy - fy)
+        if dist <= FUNNEL_RAMP:
+            var gate := int(round(lerpf(float(GATE_HALF), float(WALL_MAX), float(dist) / float(FUNNEL_RAMP))))
+            base = mini(base, gate)
+    return maxi(1, base)
 
 
-# Returns bedrock margins (left, right) for a row. Organic elsewhere, forced to
-# a centered 3-wide diggable gap inside funnel bands.
-func _margins(cy: int) -> Vector2i:
-    if _in_funnel(cy):
-        var c0 := int(W / 2) - 1
-        return Vector2i(c0, W - (c0 + 3))
-    var lw := 2 + int(round(2.0 * _margin_noise.get_noise_2d(0.0, cy)))
-    var rw := 2 + int(round(2.0 * _margin_noise.get_noise_2d(100.0, cy)))
-    return Vector2i(clampi(lw, 1, int(W / 2) - 3), clampi(rw, 1, int(W / 2) - 3))
+# One random-walk step of a wall toward target t. Returns (new_half_width, stall).
+# Mostly drifts toward t with occasional dips for jagged edges; after STALL_MAX
+# unchanged rows it is forced to step. Clamped to [1, t] so it hugs the envelope:
+# the funnel necks reliably and the intro never overshoots.
+func _walk_step(h: int, t: int, r: RandomNumberGenerator, stall: int) -> Vector2i:
+    var dir := signi(t - h)
+    var s := 0
+    var rv := r.randf()
+    if dir != 0:
+        if rv < 0.7: s = dir
+        elif rv < 0.9: s = 0
+        else: s = -dir
+    else:
+        s = (1 if rv < 0.33 else (-1 if rv < 0.66 else 0))
+    if s == 0:
+        stall += 1
+    else:
+        stall = 0
+    if stall >= STALL_MAX:                            # broke a flat run: force a step
+        s = dir if dir != 0 else (1 if h < t else -1)
+        stall = 0
+    return Vector2i(clampi(h + s, 1, t), stall)
 
 
-func _gen_cell(cx: int, cy: int, lm: int, rm: int) -> int:
-    if cy == H - 1:
-        return Cell.BEDROCK
-    if cx < lm or cx >= W - rm:
-        return Cell.BEDROCK
+func _gen_cell(cx: int, cy: int) -> int:
     if cy < GROUND:
         return Cell.AIR
-    if cy > GROUND + 4 and _cave_noise.get_noise_2d(cx, cy) > 0.55:
-        return Cell.AIR                              # organic cavern
+    if cx < EDGE or cx >= W - EDGE or cy == H - 1:
+        return Cell.BEDROCK                          # permanent outer border
+    var cxc := W >> 1
+    if cy == GROUND:
+        if cx == cxc - 1 or cx == cxc:
+            return Cell.AIR                          # the 2-wide entry hole
+        return Cell.GRASS                            # unbreakable grass cap
+    if cx < _wl[cy] or cx >= _wr[cy]:
+        return Cell.DIRT                             # unbreakable funnel wall
+    # interior (breakable) channel: organic caves, ore veins, else stone
+    if _cave_noise.get_noise_2d(cx, cy) > 0.55:
+        return Cell.AIR
     var ore := _roll_ore(cx, cy)
     if ore != -1:
         return ore
-    return Cell.DIRT if cy < 30 else Cell.STONE
+    return Cell.STONE
 
 
 # Ore only inside vein regions (high ore-noise), with depth-gated types.
@@ -202,10 +269,10 @@ func _roll_ore(cx: int, cy: int) -> int:
 
 
 func _carve_start_shaft() -> void:
-    var sx := int(W / 2)
+    var sx := W >> 1
     for cy in range(GROUND, GROUND + 16):
+        _force(sx - 1, cy, Cell.AIR)                 # aligned to the 2-wide entry hole
         _force(sx, cy, Cell.AIR)
-        _force(sx + 1, cy, Cell.AIR)
     for cx in range(sx + 1, sx + 9):                 # short L-branch for a rope corner
         _force(cx, GROUND + 8, Cell.AIR)
 
@@ -241,16 +308,15 @@ func _print_stats() -> void:
     var counts := {}
     for v in cells:
         counts[v] = counts.get(v, 0) + 1
-    print("[GridWorld] seed=%d  %dx%d  AIR=%d DIRT=%d STONE=%d BEDROCK=%d  ore: COAL=%d COPPER=%d IRON=%d CRYSTAL=%d" % [
+    print("[GridWorld] seed=%d  %dx%d  AIR=%d GRASS=%d DIRT=%d STONE=%d BEDROCK=%d  ore: COAL=%d COPPER=%d IRON=%d CRYSTAL=%d" % [
         world_seed, W, H,
-        counts.get(Cell.AIR, 0), counts.get(Cell.DIRT, 0), counts.get(Cell.STONE, 0), counts.get(Cell.BEDROCK, 0),
+        counts.get(Cell.AIR, 0), counts.get(Cell.GRASS, 0), counts.get(Cell.DIRT, 0), counts.get(Cell.STONE, 0), counts.get(Cell.BEDROCK, 0),
         counts.get(Cell.COAL, 0), counts.get(Cell.COPPER, 0), counts.get(Cell.IRON, 0), counts.get(Cell.CRYSTAL, 0)])
+    print("  channel: top(row %d)=%d  open(row %d)=%d cells" % [
+        GROUND + 1, _wr[GROUND + 1] - _wl[GROUND + 1],
+        GROUND + INTRO_ROWS, _wr[GROUND + INTRO_ROWS] - _wl[GROUND + INTRO_ROWS]])
     for fy in FUNNELS:
-        var free := 0
-        for cx in range(W):
-            if get_cell(cx, fy) != Cell.BEDROCK:
-                free += 1
-        print("  funnel @row %d: free width = %d cells" % [fy, free])
+        print("  funnel @row %d: interior channel = %d cells" % [fy, _wr[fy] - _wl[fy]])
 
 
 func _draw() -> void:

@@ -81,8 +81,13 @@ Validate the riskiest mechanic before anything else.
   guard, `relax()` anti-embed.
 - ✅ Claustrophobia / panic system — rises with depth/tight tunnels, falls near
   torches/surface, 100% → emergency rescue.
-- ✅ Hybrid map generation — per-depth probability layers, noise caves & ore veins,
-  organic bedrock margins, funnels (biome gates), injected chunks (rooms).
+- ✅ Hybrid map generation — **unbreakable funnel walls** (GRASS surface cap +
+  packed DIRT walls; pickaxe-not-shovel framing, so only STONE/ore is diggable).
+  The breakable STONE channel widens from the 2-wide entry hole down to nearly the
+  full map width, then necks to a ~2-wide gate at each FUNNELS depth (boss rooms).
+  Each wall is a per-side random walk with depth-drift + anti-stall forcing (a flat
+  run of `STALL_MAX` rows forces a step). Noise caves & ore veins are confined to
+  the breakable channel; injected chunks (rooms) on top.
 
 **Known rope caveat:** the taut-polyline needed repeated patching in jagged
 geometry (budget clamp, teleport guard, depenetration), and its worst structural

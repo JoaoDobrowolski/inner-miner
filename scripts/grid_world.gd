@@ -173,8 +173,8 @@ func _compute_walls() -> void:
     var sl := 0
     var sr := 0
     for cy in range(H):
-        if cy <= GROUND:
-            hl = 1; hr = 1; sl = 0; sr = 0          # hold the 2-wide entry hole at the cap
+        if cy <= GROUND + 2:
+            hl = 1; hr = 1; sl = 0; sr = 0          # hold the 2-wide hole through the dirt lip
             _wl[cy] = cx - 1
             _wr[cy] = cx + 1
             continue
@@ -236,6 +236,10 @@ func _gen_cell(cx: int, cy: int) -> int:
         if cx == cxc - 1 or cx == cxc:
             return Cell.AIR                          # the 2-wide entry hole
         return Cell.GRASS                            # unbreakable grass cap
+    if cy <= GROUND + 2:                             # 2 solid dirt layers under the cap
+        if cx == cxc - 1 or cx == cxc:
+            return Cell.AIR                          # ...except the 2-wide entry hole
+        return Cell.DIRT
     if cx < _wl[cy] or cx >= _wr[cy]:
         return Cell.DIRT                             # unbreakable funnel wall
     # interior (breakable) channel: organic caves, ore veins, else stone
@@ -270,11 +274,9 @@ func _roll_ore(cx: int, cy: int) -> int:
 
 func _carve_start_shaft() -> void:
     var sx := W >> 1
-    for cy in range(GROUND, GROUND + 16):
-        _force(sx - 1, cy, Cell.AIR)                 # aligned to the 2-wide entry hole
+    for cy in range(GROUND, GROUND + 5):             # shallow ~5-deep entry hole (2 wide)
+        _force(sx - 1, cy, Cell.AIR)
         _force(sx, cy, Cell.AIR)
-    for cx in range(sx + 1, sx + 9):                 # short L-branch for a rope corner
-        _force(cx, GROUND + 8, Cell.AIR)
 
 
 func _stamp_chunk(rows: Array, ox: int, oy: int) -> void:
@@ -313,7 +315,7 @@ func _print_stats() -> void:
         counts.get(Cell.AIR, 0), counts.get(Cell.GRASS, 0), counts.get(Cell.DIRT, 0), counts.get(Cell.STONE, 0), counts.get(Cell.BEDROCK, 0),
         counts.get(Cell.COAL, 0), counts.get(Cell.COPPER, 0), counts.get(Cell.IRON, 0), counts.get(Cell.CRYSTAL, 0)])
     print("  channel: top(row %d)=%d  open(row %d)=%d cells" % [
-        GROUND + 1, _wr[GROUND + 1] - _wl[GROUND + 1],
+        GROUND + 3, _wr[GROUND + 3] - _wl[GROUND + 3],
         GROUND + INTRO_ROWS, _wr[GROUND + INTRO_ROWS] - _wl[GROUND + INTRO_ROWS]])
     for fy in FUNNELS:
         print("  funnel @row %d: interior channel = %d cells" % [fy, _wr[fy] - _wl[fy]])

@@ -51,8 +51,9 @@ flatpak install flathub org.godotengine.Godot
 
 ## Known limitations (expected — to iterate on)
 
-- Wrap/unwrap is greedy and LOS-based; **sharp multi-corner chains** may let the
-  rope clip a wall. Single L-bends (the demo case) work.
+- Wrap is greedy and LOS-based; **unwrap** is gated by the corner's winding sign,
+  so the last pivot no longer drops into an illegal shortcut across a block
+  (BUG-01, fixed). Sharp multi-corner chains are otherwise still best-effort.
 - The taut clamp can push the player slightly into a wall on hard swings; collision
   recovers next frame.
 - No claustrophobia, no offline/idle, no combat — out of scope for this slice.

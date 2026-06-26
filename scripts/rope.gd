@@ -145,23 +145,44 @@ func _update_wrap(player_pos: Vector2) -> void:
         else:
             k += 1
 
-    # Release any pivot whose two neighbours can see each other again: if the
-    # straight line prev->next is clear, the rope no longer bends around that
-    # corner. Checks ALL pivots (not just the player end) so an early corner near
-    # the anchor that is no longer needed can't stay "stuck".
+    # Release a pivot when the rope no longer needs to bend around its corner.
+    #
+    # A clear prev->next line of sight is NECESSARY but NOT SUFFICIENT for the
+    # player-end (last) pivot. The rope is wrapped on one SIDE of the corner; a
+    # clear sightline can open while the player is still on that same side (the
+    # straight prev->player line just misses the block by routing through a
+    # DIFFERENT gap -- a different homotopy class). Dropping the pivot there made
+    # the rope teleport across the block: the last pivot "unpivoted" and the
+    # penultimate became the last via an illegal shortcut. That is BUG-01.
+    #
+    # The captured winding `sign` is the real release test: the bend only truly
+    # straightens once the player swings PAST the corner, flipping the sign. So
+    # the last pivot is released only when LOS is clear AND the winding reversed.
+    # Interior pivots (next = another fixed corner) keep the LOS-only rule: their
+    # sign cannot reverse on its own, and the dig case legitimately opens a clear
+    # prev<->next line that should drop a now-useless inner corner.
     var i := 0
     while i < pivots.size():
         var prev: Vector2 = anchor
         if i > 0:
             prev = pivots[i - 1]["pos"]
+        var is_last := i == pivots.size() - 1
         var nxt: Vector2 = player_pos
-        if i < pivots.size() - 1:
+        if not is_last:
             nxt = pivots[i + 1]["pos"]
-        if not _los_blocked(prev, nxt):
+        var release := not _los_blocked(prev, nxt)
+        if release and is_last:
+            # Still wound the same way around the corner? Then the rope is genuinely
+            # wrapped (just with an open sightline) -- keep it. This is the fix.
+            var pv: Vector2 = pivots[i]["pos"]
+            var cur := signf((pv - prev).cross(nxt - pv))
+            if cur == pivots[i]["sign"]:
+                release = false
+        if release:
             if debug_log:
                 var pp: Vector2 = pivots[i]["pos"]
-                print("[ROPE-DROP] reason=RELEASE (prev->next LOS clear) i=%d pos=(%.0f,%.0f) prev=(%.0f,%.0f) next=(%.0f,%.0f)" % [
-                    i, pp.x, pp.y, prev.x, prev.y, nxt.x, nxt.y])
+                print("[ROPE-DROP] reason=RELEASE (prev->next LOS clear%s) i=%d pos=(%.0f,%.0f) prev=(%.0f,%.0f) next=(%.0f,%.0f)" % [
+                    ", winding reversed" if is_last else "", i, pp.x, pp.y, prev.x, prev.y, nxt.x, nxt.y])
             pivots.remove_at(i)
             i = maxi(0, i - 1)               # neighbour changed: recheck previous
         else:
@@ -179,7 +200,10 @@ func _update_wrap(player_pos: Vector2) -> void:
         if fixed_length() + attach.distance_to(corner) > rope_out:
             break
         var s: float = (corner - attach).cross(player_pos - corner)
-        pivots.append({ "pos": corner, "sign": signf(s) })
+        var ws := signf(s)
+        if ws == 0.0:
+            ws = 1.0                        # degenerate (collinear add): pick a side; self-corrects
+        pivots.append({ "pos": corner, "sign": ws })
 
 
 func _find_wrap_corner(a: Vector2, b: Vector2):

@@ -76,17 +76,20 @@ Validate the riskiest mechanic before anything else.
 - ✅ Custom tile-grid player physics (`player.gd`) — walk, jump, air-swing,
   per-axis collision, **unconditional depenetration** (never rests inside a solid).
 - ✅ Digging — adjacent cells, never straight up.
-- ✅ Rope (`rope.gd`) — taut polyline: corner wrap/unwrap (LOS), manual reel (J),
-  length budget, panic rewind, teleport guard, `relax()` anti-embed.
+- ✅ Rope (`rope.gd`) — taut polyline: corner wrap (LOS) / unwrap (LOS +
+  winding-sign gate), manual reel (J), length budget, panic rewind, teleport
+  guard, `relax()` anti-embed.
 - ✅ Claustrophobia / panic system — rises with depth/tight tunnels, falls near
   torches/surface, 100% → emergency rescue.
 - ✅ Hybrid map generation — per-depth probability layers, noise caves & ore veins,
   organic bedrock margins, funnels (biome gates), injected chunks (rooms).
 
-**Known rope caveat:** the taut-polyline is fragile in jagged geometry; it's been
-patched repeatedly (budget clamp, teleport guard, depenetration). If fragility
-keeps biting, the root-cause fix is a **Verlet/PBD rope** — deferred, not free
-(length accounting + rewind get messier). Tracked, not scheduled.
+**Known rope caveat:** the taut-polyline needed repeated patching in jagged
+geometry (budget clamp, teleport guard, depenetration), and its worst structural
+failure — the corner-clip / unpivot shortcut (BUG-01) — is now fixed via the
+winding-sign release gate. A **Verlet/PBD rope** remains an optional fallback if
+new fragility appears, but it is no longer the only root-cause path — deferred,
+not scheduled.
 
 ## Phase 1 — Core economy loop 🔨 (IN PROGRESS)
 
@@ -146,7 +149,8 @@ sell, and see a wallet grow. No upgrades yet.
 
 ## Cross-cutting / deferred ❓
 
-- **Verlet/PBD rope** if the polyline stays fragile (see Phase 0 caveat).
+- **Verlet/PBD rope** — optional fallback; the polyline's worst bug (BUG-01) is
+  fixed, so this is no longer the only root-cause path (see Phase 0 caveat).
 - **Multiplayer** — kept architecturally possible (rope is pure logic, no
   rendering), not a near-term goal.
 - **Combat** — frozen until the mining loop proves fun.
@@ -158,34 +162,55 @@ sell, and see a wallet grow. No upgrades yet.
 ## The rope has two backends — dev toggle "Verlet rope (A/B)"
 
 - **Mode A — taut polyline** (`scripts/rope.gd`): the default. Anchor → convex
-  tile-corner pivots → player; wraps/unwraps by line-of-sight.
-- **Mode B — Verlet chain** (`scripts/rope_verlet.gd`): the in-progress
-  replacement. A 36-point mass chain that drapes over the tiles (point + segment
-  collision) with no corner/LOS logic. Toggle live from the dev menu. The player
-  moves under its own physics; the rope is a leash that only acts at full
-  extension (decoupled, so it doesn't drag — an earlier "viscous" version did).
+  tile-corner pivots → player; wraps by line-of-sight, unwraps when LOS clears
+  AND the corner's winding sign reverses (BUG-01 fix).
+- **Mode B — Verlet chain** (`scripts/rope_verlet.gd`): an in-progress
+  alternative (its original motivation, BUG-01, is now fixed in Mode A). A
+  36-point mass chain that drapes over the tiles (point + segment collision) with
+  no corner/LOS logic. Toggle live from the dev menu. The player moves under its
+  own physics; the rope is a leash that only acts at full extension (decoupled,
+  so it doesn't drag — an earlier "viscous" version did).
 
 The full blow-by-blow of every rope attempt lives in the project memory
 (`inner-miner-rope-status`).
 
-## BUG-01 "Rope corner-clip" (Mode A) — root cause found; superseded by Mode B
+## BUG-01 "Rope corner-clip / unpivot shortcut" (Mode A) — FIXED (2026-06-26)
 
-**Symptom:** in blocky terrain the rope *looks* like it cuts a block at a corner.
-Only near a corner; the player is usually resting (static).
+**Symptom:** with the rope wrapped on a corner, the *last* pivot suddenly drops
+and the rope takes an illegal shortcut (penultimate→player), appearing to "cut
+through" a block. NOT cosmetic — the pivot genuinely unwraps: the last pivot
+unpivots and the penultimate becomes the last. Triggered only when the player has
+a clear sightline to the previous attach point while still on the wrapped side of
+the corner (the user's red zone; the green zones are exactly where LOS is blocked).
 
-**Root cause (confirmed by an in-game px-depth probe + reason-logged release):**
-the last pivot is dropped the instant `_los_blocked(prev, player)` reads clear,
-but the 0.5px LOS sampling **steps over** a single-point corner-vertex graze (the
-chord enters the block for a <0.5px sliver). The center-line never really goes
-inside (solid-chord ≈ 0 — which is why penetration probes stayed silent), so only
-the 2px-wide *drawn* line straddles the corner. This is a **structural** limit of
-the polyline: killing the graze needs a *sensitive* LOS, killing pivot oscillation
-needs a *tolerant* LOS — the 0.5px sampling is the deliberate trade (accept the
-graze to avoid oscillation). No polyline patch wins both; margin/hysteresis
-attempts all failed in real play.
+**Root cause:** `_update_wrap()` released the last pivot the instant
+`_los_blocked(prev, player)` read clear — on line-of-sight *alone*. A clear
+sightline is necessary but NOT sufficient: it can open while the player is still
+on the SAME side of the corner the rope is wound around. The straight prev→player
+line then routes through a *different gap* than the wrapped path — a different
+homotopy class (rope goes UNDER the block, the straight line goes OVER it).
+Dropping the pivot there teleports the rope across the block. Each pivot already
+stored a winding `sign` captured at wrap time, but the release path never
+consulted it.
 
-**Resolution:** Mode B (Verlet) has no wrap/LOS decision, so neither graze nor
-oscillation. Validated to drape ≤1.4px on the exact failing geometry.
+**Fix:** the last pivot is released only when LOS is clear AND the winding `sign`
+has actually reversed (player swung *past* the corner). Interior pivots keep the
+LOS-only rule — their sign can't reverse on its own, and the dig case legitimately
+opens a clear prev→next line that should drop a now-useless inner corner. The
+wrap-time sign is hardened to never be zero. See the `Rope._update_wrap()` release
+loop.
+
+**Validation (headless, `_rope_unwrap_diag.gd`, the user's real geometry — anchor
+(784,32), block A at cell (22,3), A-SE pivot):** of the swept player positions
+with clear LOS to the anchor, 8006 were still wound the same way (rope genuinely
+wrapped) — the old rule wrongly dropped all 8006; the fix drops 0. The 5032
+reversed-winding positions (legit unwrap) still release, unchanged. Confirmed in
+live play.
+
+**Correction to the record:** the earlier "0.5px LOS-sampling graze / cosmetic
+2px draw / structural polyline limit / only solvable by Mode B" diagnosis was
+**wrong**. The failure was a real structural unwrap, fixable in Mode A. The 0.5px
+LOS sampling is kept (it still catches thin grazes) but was never the cause.
 
 ## Mode B (Verlet) — issue status (2026-06-26, headless-validated)
 

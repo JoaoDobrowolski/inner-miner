@@ -18,6 +18,12 @@ var panic_fill: ColorRect
 var backpack: Backpack
 var dev_menu: DevMenu
 
+# economy: currency earned by auto-selling ore on reaching the surface (Phase 1,
+# item 3 — Motherload-style, no shop). Stored here until a save system exists.
+var wallet := 0
+var _flash := ""                   # transient HUD message (sells / rescue penalty)
+var _flash_t := 0.0
+
 var panicking := false
 var emergency := false
 var debug_view := false
@@ -297,6 +303,9 @@ func _physics_process(delta: float) -> void:
     _update_camera(delta)
     _update_block_edit()
     _update_digging(delta)
+    _sell_on_surface()
+    if _flash_t > 0.0:
+        _flash_t -= delta
     _update_hud()
     queue_redraw()
 
@@ -395,6 +404,31 @@ func _place_torch() -> void:
     torches.append(world.cell_center(pc.x, pc.y))
 
 
+# --- economy: auto-sell at the surface (Phase 1, item 3) ---------------------
+
+func _on_surface() -> bool:
+    return player.position.y < GridWorld.GROUND * GridWorld.CELL
+
+
+# Convert the whole backpack to currency. Returns the amount earned.
+func _do_sell() -> int:
+    var earned := backpack.value()
+    if earned > 0:
+        wallet += earned
+        backpack.clear_all()
+    return earned
+
+
+# Surface (layer 0) is the market, Motherload-style: reaching it safely (not
+# mid-rescue) auto-sells the load. No shop, no chest.
+func _sell_on_surface() -> void:
+    if panicking or player.rewinding or not _on_surface() or backpack.count() == 0:
+        return
+    var earned := _do_sell()
+    _flash = "Sold ore  +$%d" % earned
+    _flash_t = 2.5
+
+
 func _start_panic() -> void:
     if panicking:
         return
@@ -415,6 +449,12 @@ func _end_panic() -> void:
     rope.rope_out = rope.max_length * 0.5
     if use_verlet:
         rope._inited = false             # re-derive the chain straight to the new spawn
+    # emergency rescue costs: spill half the load, then the surface sells the rest
+    var lost := backpack.drop_half()
+    var earned := _do_sell()
+    if lost > 0 or earned > 0:
+        _flash = "RESCUED — spilled -$%d, sold +$%d" % [lost, earned]
+        _flash_t = 3.5
 
 
 func _reset() -> void:
@@ -437,7 +477,9 @@ func _update_hud() -> void:
         rope.rope_out / PPM, rope.max_length / PPM, used_m, rope.pivots.size()]
     hud.text += "PANIC %d%%   torches %d   %s\n" % [int(panic.value), torches.size(), status]
     var bag_warn := "  [FULL]" if backpack.is_full() else ""
-    hud.text += "BAG %d/%d  value $%d%s\n" % [backpack.count(), backpack.capacity, backpack.value(), bag_warn]
+    hud.text += "BAG %d/%d  value $%d%s   WALLET $%d\n" % [backpack.count(), backpack.capacity, backpack.value(), bag_warn, wallet]
+    if _flash_t > 0.0:
+        hud.text += "%s\n" % _flash
     var pc := world.world_to_cell(player.position)
     var depth_m := maxf(0.0, (player.position.y / GridWorld.CELL - GridWorld.GROUND) * 2.0)
     hud.text += "POS x=%.0f y=%.0f  cell=(%d,%d)  depth=%.0fm  ground=%s  vel=(%.0f,%.0f)\n" % [

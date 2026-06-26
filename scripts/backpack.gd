@@ -42,5 +42,19 @@ func value() -> int:
     return v
 
 
+# Emergency-rescue penalty: spill half the load (keep the floor of each stack so
+# a single ore is fully lost). Returns the sell value dropped, for HUD feedback.
+func drop_half() -> int:
+    var lost := 0
+    for k in items.keys():
+        var keep: int = items[k] / 2          # integer floor
+        lost += int(_value.get(k, 0)) * (items[k] - keep)
+        if keep > 0:
+            items[k] = keep
+        else:
+            items.erase(k)
+    return lost
+
+
 func clear_all() -> void:
     items.clear()

@@ -91,7 +91,7 @@ winding-sign release gate. A **Verlet/PBD rope** remains an optional fallback if
 new fragility appears, but it is no longer the only root-cause path — deferred,
 not scheduled.
 
-## Phase 1 — Core economy loop 🔨 (IN PROGRESS)
+## Phase 1 — Core economy loop ✅ (pending live feel test)
 
 The smallest loop that makes the game *a game*: mine → carry → sell → spend.
 
@@ -101,10 +101,12 @@ The smallest loop that makes the game *a game*: mine → carry → sell → spen
 2. ✅ **Backpack** (`backpack.gd`, RefCounted) with flat capacity (20) and per-ore
    sell values. Ore in a **full** backpack stays in the wall (no waste); dirt/stone
    stay diggable. HUD shows `BAG count/cap  value $`.
-3. 🔨 **Sell at surface.** Returning to the surface (or a sell zone) converts the
-   backpack to currency. HUD shows wallet.
-4. 📋 **Rescue penalty becomes real.** Emergency rescue (panic 100%) costs you —
-   drop part/all of the backpack. This is what makes claustrophobia *matter*.
+3. ✅ **Sell at surface.** Auto-sells the whole backpack on reaching layer 0
+   (Motherload-style, no shop/chest): `wallet` grows, HUD shows it. Guarded so it
+   never fires mid-rescue. (`main._sell_on_surface()` / `_do_sell()`.)
+4. ✅ **Rescue penalty (first pass).** Emergency rescue (panic 100%) spills HALF
+   the load (`Backpack.drop_half()`) before the surface sells the rest — panicking
+   costs you, so claustrophobia *matters*.
 
 Deliverable: a player can descend, mine ore, risk the panic threshold, surface,
 sell, and see a wallet grow. No upgrades yet.

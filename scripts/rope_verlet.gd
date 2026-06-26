@@ -51,11 +51,27 @@ func _init_chain(ppos: Vector2) -> void:
     _inited = true
 
 
-# Straight-line budget (geodesic ~ straight when the path is mostly clear). v1
-# simplification: the leash itself is enforced by the collision-aware chain below,
-# which pulls the end back around corners, so this is only the rope_out policy.
+# Geodesic budget: the rope's length is the path it actually takes along the
+# draped chain (anchor -> ... -> last contact -> player), NOT the straight line.
+# This mirrors Mode A (rope.gd) and is what makes the leash/reel follow the rope
+# around corners instead of cutting straight to the winch.
 func used_length(player_pos: Vector2) -> float:
-    return anchor.distance_to(player_pos)
+    if not _inited or points.size() < 2:
+        return anchor.distance_to(player_pos)
+    return _fixed_length() + _attach().distance_to(player_pos)
+
+
+# Chain length from the anchor up to the attach point (the last interior point,
+# i.e. the rope's last contact before the free player end).
+func _fixed_length() -> float:
+    var t := 0.0
+    for i in range(point_count - 2):                # segments points[0..n-2]
+        t += (points[i] as Vector2).distance_to(points[i + 1])
+    return t
+
+
+func _attach() -> Vector2:
+    return points[point_count - 2]
 
 
 func chain_length() -> float:
@@ -89,8 +105,8 @@ func relax(player) -> void:
 # --- per-frame constraint (called by the player after it moves) -------------
 func constrain(player, delta: float) -> void:
     var ppos: Vector2 = player.position
-    if not _inited:
-        _init_chain(ppos)
+    if not _inited or points.size() < point_count:
+        _init_chain(ppos)               # self-heal if a restore() left the chain empty
 
     var used := used_length(ppos)
     if reeling:
@@ -111,15 +127,25 @@ func constrain(player, delta: float) -> void:
     _simulate_visual(player.position)
 
 
-# Clamp the player to within rope_out of the anchor (straight line) and remove
-# only the outward radial velocity, preserving tangential swing.
+# Path-aware leash: clamp the player to within the rope's REMAINING budget of
+# the last contact point (attach), along the rope's local direction -- not a
+# straight line to the winch. So at full extension (and while reeling) the player
+# is pulled toward the last contact and around corners, matching Mode A. Only the
+# radial velocity along that last segment is killed, preserving tangential swing,
+# so within reach the player still moves freely (no viscous drag).
 func _apply_leash(player) -> void:
-    var to: Vector2 = player.position - anchor
+    var attach: Vector2 = anchor
+    var fixed := 0.0
+    if _inited and points.size() >= 2:
+        attach = _attach()
+        fixed = _fixed_length()
+    var budget_last := maxf(rope_out - fixed, 0.0)
+    var to: Vector2 = player.position - attach
     var d := to.length()
-    if d <= rope_out or d < 0.001:
+    if d <= budget_last or d < 0.001:
         return
     var n := to / d
-    player.position = anchor + n * rope_out
+    player.position = attach + n * budget_last
     var radial: float = player.velocity.dot(n)
     if radial > 0.0:
         player.velocity -= n * radial
@@ -210,6 +236,46 @@ func _push_out(p: Vector2) -> Vector2:
             push = Vector2(0, -(ty + 0.01))         # fully buried: shove up
         p += push
     return p
+
+
+# --- drawing -----------------------------------------------------------------
+# Visual polyline for main.gd to draw. The simulated chain always sags a little
+# under gravity (and PBD doesn't fully converge in one frame), so a fully-extended
+# rope still looks bent (B-03). When the rope is near taut AND the straight
+# anchor->player chord is clear of solids, blend the drawn points toward that
+# chord so it reads straight. When the chord is blocked (a real wrap over a
+# corner), the draped chain is kept as-is so the wrap is not flattened. Visual
+# only -- the simulation/collision is untouched.
+func draw_points() -> Array:
+    if points.size() < 3:
+        return points.duplicate()
+    var a: Vector2 = points[0]
+    var b: Vector2 = points[point_count - 1]
+    var t := _tautness(a, b)
+    if t <= 0.0 or _chord_blocked(a, b):
+        return points.duplicate()
+    var out: Array = points.duplicate()
+    for i in range(1, point_count - 1):
+        var frac := float(i) / float(point_count - 1)
+        out[i] = (points[i] as Vector2).lerp(a.lerp(b, frac), t)
+    return out
+
+
+# 0 when slack, ramps to 1 as the straight distance approaches rope_out.
+func _tautness(a: Vector2, b: Vector2) -> float:
+    if rope_out <= 0.0:
+        return 0.0
+    return clampf((a.distance_to(b) / rope_out - 0.97) / 0.03, 0.0, 1.0)
+
+
+func _chord_blocked(a: Vector2, b: Vector2) -> bool:
+    var d := a.distance_to(b)
+    var ss := int(d / 4.0) + 1
+    for s in range(ss + 1):
+        var p: Vector2 = a.lerp(b, float(s) / float(ss))
+        if world.is_solid(floori(p.x / GridWorld.CELL), floori(p.y / GridWorld.CELL)):
+            return true
+    return false
 
 
 # --- panic rescue: reel the player up toward the anchor ---------------------

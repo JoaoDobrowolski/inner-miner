@@ -613,7 +613,7 @@ func _draw() -> void:
     # rope: Verlet draws its point chain; polyline draws anchor -> pivots -> player
     var pts: Array = []
     if use_verlet:
-        pts = rope.points.duplicate()
+        pts = rope.draw_points()        # taut rope reads straight (B-03); wraps kept
     else:
         pts = [rope.anchor]
         for p in rope.pivots:

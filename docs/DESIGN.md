@@ -187,11 +187,23 @@ attempts all failed in real play.
 **Resolution:** Mode B (Verlet) has no wrap/LOS decision, so neither graze nor
 oscillation. Validated to drape ≤1.4px on the exact failing geometry.
 
-## Mode B (Verlet) — open issues (being tuned)
+## Mode B (Verlet) — issue status (2026-06-26, headless-validated)
 
-- **B-01 — wrap unwinds over blocks:** running over a block (or several) makes the
-  rope that was wrapped around them come undone.
-- **B-02 — reel (J) path:** J does not pull the player toward the last contact —
-  it seems related to it but takes a weird path.
-- **B-03 — still flexed at the limit:** when the rope reaches max length it still
-  looks bent. TBD: fix visually only, or in the rope physics.
+- **B-02 — reel (J) path: FIXED.** The leash + length used a straight line to the
+  winch; now they are geodesic (length along the draped chain; the leash clamps to
+  the budget remaining past the *last contact* `points[n-2]`, in the rope's local
+  direction). The reel follows the rope to the last contact instead of pulling
+  straight through geometry. Player stays decoupled (free-fall still hits MAX_FALL —
+  no viscosity). *Pending live feel test.*
+- **B-03 — flexed at the limit: FIXED (visual only).** `RopeVerlet.draw_points()`
+  blends the drawn chain toward the straight anchor→player chord by a tautness factor
+  (0→1 as it nears full extension), but only when that chord is clear of solids — a
+  real wrap is never flattened. Drawn sag at the limit: 43.8px → 0.1px. Physics
+  untouched.
+- **B-01 — wrap unwinds over blocks: OPEN, re-diagnosed.** It is **not** the length
+  budget. Measured: even with a huge slack budget the Verlet chain cuts ~65px through
+  a 2-wide wall — the per-point collision (`_push_out`) shoves each point to its
+  *nearest* air edge (sideways), so it cannot route the chain *over the top* of a
+  tall obstacle. Shallow 1-cell bumps wrap cleanly. The real fix is a collision-
+  routing change (over-the-top bias / corner-anchor hybrid / sub-stepping) — invasive
+  and uncertain; deferred pending a decision.

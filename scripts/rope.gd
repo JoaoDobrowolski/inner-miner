@@ -13,6 +13,9 @@ var rope_out: float                 # rope currently let out (<= max_length)
 var min_out := 16.0
 var pivots: Array = []              # each: { "pos": Vector2, "sign": float }
 
+var debug_log := false              # dev: log WHY each pivot is dropped (wired to the
+                                    # pivot-linger toggle) so the failing path is named
+
 var reel_speed := 220.0
 var rewind_speed := 1000.0
 var reeling := false
@@ -98,6 +101,7 @@ func _limit_to_budget(player, budget: float) -> void:
         if seg > remaining:
             player.position = prev + (pv - prev) / seg * remaining if seg > 0.001 else prev
             _kill_radial(player, prev)
+            if debug_log: print("[ROPE-DROP] reason=BUDGET (rope_out=%.1f too short) dropping %d pivot(s) from i=%d" % [budget, pivots.size() - i, i])
             for j in range(pivots.size() - 1, i - 1, -1):
                 pivots.remove_at(j)
             return
@@ -136,6 +140,7 @@ func _update_wrap(player_pos: Vector2) -> void:
         var gx := int(round(gp.x / GridWorld.CELL))
         var gy := int(round(gp.y / GridWorld.CELL))
         if not _is_convex_corner(gx, gy):
+            if debug_log: print("[ROPE-DROP] reason=STALE (corner %d,%d no longer convex) pos=(%.0f,%.0f)" % [gx, gy, gp.x, gp.y])
             pivots.remove_at(k)
         else:
             k += 1
@@ -153,6 +158,10 @@ func _update_wrap(player_pos: Vector2) -> void:
         if i < pivots.size() - 1:
             nxt = pivots[i + 1]["pos"]
         if not _los_blocked(prev, nxt):
+            if debug_log:
+                var pp: Vector2 = pivots[i]["pos"]
+                print("[ROPE-DROP] reason=RELEASE (prev->next LOS clear) i=%d pos=(%.0f,%.0f) prev=(%.0f,%.0f) next=(%.0f,%.0f)" % [
+                    i, pp.x, pp.y, prev.x, prev.y, nxt.x, nxt.y])
             pivots.remove_at(i)
             i = maxi(0, i - 1)               # neighbour changed: recheck previous
         else:

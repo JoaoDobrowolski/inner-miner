@@ -29,6 +29,24 @@ var free_cam := false
 var free_cam_y := 0.0
 var block_edit := false
 
+# rope penetration probe (dev, opt-in): logs how far the drawn rope runs INSIDE a
+# solid (the "solid-chord" in px). This is the correct cut metric -- distance to
+# the nearest air edge collapses to ~0 at a convex corner even when the rope cuts
+# a real triangle off it, so the earlier metric hid genuine cuts. Edge-triggered:
+# a settled scene logs once.
+const PEN_CHORD_MIN := 1.5
+var rope_pen_probe := false
+var _pen_armed := true
+
+# pivot linger (dev): ghost each released pivot for ~1s (cyan, labelled with its
+# corner direction NW/NE/SW/SE) and log every pivot add/remove. A one-frame wrong
+# wrap -- e.g. snapping to the NW corner while moving left -- becomes visible and
+# traceable instead of flashing past.
+const PIVOT_GHOST_LIFE := 1.0
+var pivot_linger := false
+var _ghosts: Array = []          # each: { "pos": Vector2, "dir": String, "life": float }
+var _prev_piv: Array = []        # previous frame's pivot positions (add/remove diff)
+
 # digging: hold a direction into a solid; it breaks after break_time seconds
 var break_time := 0.5
 var _dig_timer := 0.0
@@ -166,6 +184,16 @@ func _build_dev_menu(layer: CanvasLayer) -> void:
     var set_be: Callable = func(v): block_edit = v
     dev_menu.add_toggle("Block edit LMB/RMB", get_be, set_be)
 
+    # rope penetration probe: logs px depth of any real rope-vs-block crossing
+    var get_pen: Callable = func(): return rope_pen_probe
+    var set_pen: Callable = func(v): rope_pen_probe = v; _pen_armed = true
+    dev_menu.add_toggle("Rope pen probe (log)", get_pen, set_pen)
+
+    # pivot linger: ghost released pivots + log pivot add/remove with corner dir
+    var get_lg: Callable = func(): return pivot_linger
+    var set_lg: Callable = func(v): pivot_linger = v; rope.debug_log = v; _ghosts.clear(); _prev_piv.clear()
+    dev_menu.add_toggle("Pivot linger (dbg)", get_lg, set_lg)
+
     var get_bt: Callable = func(): return break_time
     var set_bt: Callable = func(v): break_time = v
     dev_menu.add_slider("Break time s", 0.0, 2.0, 0.1, get_bt, set_bt)
@@ -192,6 +220,8 @@ func _dev_reset_defaults() -> void:
     claustrophobia_off = false
     free_cam = false
     block_edit = false
+    rope_pen_probe = false
+    pivot_linger = false
     break_time = 0.5
     player.max_air_jumps = 0
     player.high_jump_enabled = false
@@ -231,6 +261,11 @@ func _physics_process(delta: float) -> void:
     _update_digging(delta)
     _update_hud()
     queue_redraw()
+
+    if rope_pen_probe and not panicking:
+        _check_rope_pen()
+    if pivot_linger:
+        _update_pivot_linger(delta)
 
     # Teleport detector: a single-frame jump bigger than ~1.5 cells while not in
     # a rescue should never happen. Log the rope state so the bug can be traced.
@@ -374,6 +409,161 @@ func _update_hud() -> void:
     panic_fill.color = Color(0.2, 0.8, 0.3).lerp(Color(0.9, 0.1, 0.1), f)
 
 
+# --- pivot linger debug (dev, opt-in) ---------------------------------------
+
+# Corner direction of a pivot, recovered from its 2px air offset.
+func _pivot_dir(pos: Vector2) -> String:
+    var gx := int(round(pos.x / GridWorld.CELL))
+    var gy := int(round(pos.y / GridWorld.CELL))
+    var dx := pos.x - gx * GridWorld.CELL
+    var dy := pos.y - gy * GridWorld.CELL
+    return ("N" if dy < 0.0 else "S") + ("W" if dx < 0.0 else "E")
+
+
+func _has_pos(arr: Array, pos: Vector2) -> bool:
+    for q in arr:
+        if (q as Vector2).distance_to(pos) < 0.5:
+            return true
+    return false
+
+
+func _update_pivot_linger(delta: float) -> void:
+    var cur: Array = []
+    for p in rope.pivots:
+        cur.append(p["pos"])
+
+    # log additions / removals vs last frame, with corner direction
+    for pos in cur:
+        if not _has_pos(_prev_piv, pos):
+            var gx := int(round((pos as Vector2).x / GridWorld.CELL))
+            var gy := int(round((pos as Vector2).y / GridWorld.CELL))
+            print("[PIVOT] +%s corner(%d,%d) at (%.0f,%.0f)  pivots=%d" % [
+                _pivot_dir(pos), gx, gy, (pos as Vector2).x, (pos as Vector2).y, rope.pivots.size()])
+    for pos in _prev_piv:
+        if not _has_pos(cur, pos):
+            var gx := int(round((pos as Vector2).x / GridWorld.CELL))
+            var gy := int(round((pos as Vector2).y / GridWorld.CELL))
+            print("[PIVOT] -%s corner(%d,%d) at (%.0f,%.0f)" % [
+                _pivot_dir(pos), gx, gy, (pos as Vector2).x, (pos as Vector2).y])
+    _prev_piv = cur.duplicate()
+
+    # refresh ghosts for current pivots; age the rest out over PIVOT_GHOST_LIFE
+    for pos in cur:
+        var hit := false
+        for g in _ghosts:
+            if (g["pos"] as Vector2).distance_to(pos) < 0.5:
+                g["life"] = PIVOT_GHOST_LIFE
+                hit = true
+                break
+        if not hit:
+            _ghosts.append({ "pos": pos, "dir": _pivot_dir(pos), "life": PIVOT_GHOST_LIFE })
+    var k := 0
+    while k < _ghosts.size():
+        if not _has_pos(cur, _ghosts[k]["pos"]):
+            _ghosts[k]["life"] -= delta
+        if _ghosts[k]["life"] <= 0.0:
+            _ghosts.remove_at(k)
+        else:
+            k += 1
+
+
+# --- rope penetration probe (dev, opt-in) -----------------------------------
+
+# Longest contiguous run of a segment that lies INSIDE a solid (px), plus the
+# midpoint of that run. This is the real "how far the rope cuts through" measure;
+# it does NOT collapse to ~0 at a convex corner the way dist-to-air-edge does.
+func _seg_solid_chord(a: Vector2, b: Vector2) -> Dictionary:
+    var d := b - a
+    var dist := d.length()
+    if dist < 0.5:
+        return {"chord": 0.0, "mid": a}
+    var steps := int(dist / 0.1) + 1
+    var step_px := dist / float(steps)
+    var best := 0.0
+    var best_mid := a
+    var run := 0
+    var run_start := 0
+    for s in range(0, steps + 1):
+        if world.point_solid(a + d * (float(s) / float(steps))):
+            if run == 0:
+                run_start = s
+            run += 1
+            var chord := float(run) * step_px
+            if chord > best:
+                best = chord
+                best_mid = a + d * (float(run_start + s) * 0.5 / float(steps))
+        else:
+            run = 0
+    return {"chord": best, "mid": best_mid}
+
+
+# Scan the drawn polyline (anchor -> pivots -> player) for the longest solid-chord.
+# Edge-triggered logging: a settled scene logs once.
+func _check_rope_pen() -> void:
+    var pts: Array = [rope.anchor]
+    for p in rope.pivots:
+        pts.append(p["pos"])
+    pts.append(player.position)
+
+    var worst := 0.0
+    var worst_seg := -1
+    var worst_pt := Vector2.ZERO
+    for i in range(pts.size() - 1):
+        var r := _seg_solid_chord(pts[i], pts[i + 1])
+        if r["chord"] > worst:
+            worst = r["chord"]
+            worst_seg = i
+            worst_pt = r["mid"]
+
+    if worst < PEN_CHORD_MIN:
+        if worst < PEN_CHORD_MIN * 0.5:
+            _pen_armed = true
+        return
+    if not _pen_armed:
+        return
+    _pen_armed = false
+    _log_rope_pen(pts, worst, worst_seg, worst_pt)
+
+
+func _log_rope_pen(pts: Array, chord: float, seg: int, pt: Vector2) -> void:
+    var along := 0.0                                  # rope length from anchor to the cut
+    for i in range(seg):
+        along += (pts[i] as Vector2).distance_to(pts[i + 1])
+    along += (pts[seg] as Vector2).distance_to(pt)
+    var bend := 180.0                                 # bend angle at the corner entering this segment
+    if seg >= 1 and seg < pts.size() - 1:
+        var v1: Vector2 = ((pts[seg - 1] as Vector2) - (pts[seg] as Vector2)).normalized()
+        var v2: Vector2 = ((pts[seg + 1] as Vector2) - (pts[seg] as Vector2)).normalized()
+        bend = rad_to_deg(acos(clampf(v1.dot(v2), -1.0, 1.0)))
+    var pc := world.world_to_cell(player.position)
+    var xc := world.world_to_cell(pt)
+    var piv := ""
+    for p in rope.pivots:
+        piv += "(%d,%d) " % [int(p["pos"].x), int(p["pos"].y)]
+
+    print("[ROPE-PEN] solid_chord=%.2fpx (rope cuts through block)  seg=%d/%d  bend=%.0fdeg  along_rope=%.0fpx" % [
+        chord, seg, pts.size() - 2, bend, along])
+    print("  player cell=(%d,%d) pos=(%.0f,%.0f) on_ground=%s vel=(%.0f,%.0f)" % [
+        pc.x, pc.y, player.position.x, player.position.y, str(player.on_ground),
+        player.velocity.x, player.velocity.y])
+    print("  rope_out=%.1f used=%.1f pivots=%d: [%s]" % [
+        rope.rope_out, rope.used_length(player.position), rope.pivots.size(), piv.strip_edges()])
+    print("  crossing px=(%.0f,%.0f) cell=(%d,%d)   (# solid · o pivot · P player · X crossing)" % [
+        pt.x, pt.y, xc.x, xc.y])
+    var pivot_cells := {}
+    for p in rope.pivots:
+        pivot_cells[Vector2i(floori(p["pos"].x / GridWorld.CELL), floori(p["pos"].y / GridWorld.CELL))] = true
+    for cy in range(xc.y - 6, xc.y + 7):
+        var line := "  "
+        for cx in range(xc.x - 10, xc.x + 11):
+            if cx == xc.x and cy == xc.y: line += "X"
+            elif cx == pc.x and cy == pc.y: line += "P"
+            elif pivot_cells.has(Vector2i(cx, cy)): line += "o"
+            elif world.is_solid(cx, cy): line += "#"
+            else: line += "."
+        print(line)
+
+
 func _draw() -> void:
     if rope == null or player == null:
         return
@@ -389,6 +579,16 @@ func _draw() -> void:
     draw_circle(rope.anchor, 5.0, Color(0.60, 0.40, 0.20))   # winch
     for p in rope.pivots:
         draw_circle(p["pos"], 4.0, Color(1.0, 0.30, 0.30))   # wrap corners
+
+    # pivot linger: fading cyan ghosts of recent pivots, labelled with corner dir
+    if pivot_linger:
+        var font := ThemeDB.fallback_font
+        for g in _ghosts:
+            var a: float = clampf(g["life"] / PIVOT_GHOST_LIFE, 0.0, 1.0)
+            draw_circle(g["pos"], 6.0, Color(0.2, 0.9, 1.0, a * 0.7))
+            if font != null:
+                draw_string(font, (g["pos"] as Vector2) + Vector2(7, -7), g["dir"],
+                    HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.3, 0.95, 1.0, a))
 
     # dig progress feedback on the targeted block
     if _dig_target.x >= 0 and _dig_timer > 0.0 and break_time > 0.0:

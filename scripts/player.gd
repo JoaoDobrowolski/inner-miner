@@ -26,10 +26,10 @@ var _reel_hop_available := false    # the reel-hop charge (granted on a new soli
 var _was_touching := false          # touched a solid last frame (for edge-triggered refresh)
 
 var world: GridWorld
-var rope: Rope
+var rope                            # Rope or RopeVerlet (duck-typed: same surface)
 
 
-func setup(w: GridWorld, r: Rope) -> void:
+func setup(w: GridWorld, r) -> void:
     world = w
     rope = r
 

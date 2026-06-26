@@ -9,7 +9,7 @@ const DEFAULT_BAG := 20
 
 var world: GridWorld
 var player: Player
-var rope: Rope
+var rope                            # Rope or RopeVerlet (A/B via use_verlet)
 var camera: Camera2D
 var hud: Label
 var panic: PanicSystem
@@ -22,6 +22,11 @@ var panicking := false
 var emergency := false
 var debug_view := false
 var torches: Array = []
+
+# rope backend: false = taut polyline (Rope), true = Verlet chain (RopeVerlet).
+# Toggle at runtime from the dev menu to A/B the two in-game.
+var use_verlet := false
+var _anchor_pos := Vector2.ZERO
 
 # dev-mode state
 var claustrophobia_off := false
@@ -63,8 +68,8 @@ func _ready() -> void:
     add_child(world)
 
     var sx := int(GridWorld.W / 2)
-    var anchor_pos := Vector2((sx + 0.5) * GridWorld.CELL, 1.0 * GridWorld.CELL)
-    rope = Rope.new(world, anchor_pos, MAX_ROPE_METERS * PPM)
+    _anchor_pos = Vector2((sx + 0.5) * GridWorld.CELL, 1.0 * GridWorld.CELL)
+    rope = _make_rope(MAX_ROPE_METERS * PPM)
     panic = PanicSystem.new()
     backpack = Backpack.new()
 
@@ -82,6 +87,22 @@ func _ready() -> void:
     camera.make_current()
 
     _build_hud()
+
+
+# Build the active rope backend at the current anchor with the given max length.
+func _make_rope(max_len: float):
+    if use_verlet:
+        return RopeVerlet.new(world, _anchor_pos, max_len)
+    return Rope.new(world, _anchor_pos, max_len)
+
+
+# Swap the rope backend live (dev A/B), preserving max length, and reset the run.
+func _set_verlet(v: bool) -> void:
+    use_verlet = v
+    var ml: float = rope.max_length
+    rope = _make_rope(ml)
+    player.setup(world, rope)
+    _reset()
 
 
 func _build_hud() -> void:
@@ -194,6 +215,11 @@ func _build_dev_menu(layer: CanvasLayer) -> void:
     var set_lg: Callable = func(v): pivot_linger = v; rope.debug_log = v; _ghosts.clear(); _prev_piv.clear()
     dev_menu.add_toggle("Pivot linger (dbg)", get_lg, set_lg)
 
+    # rope backend A/B: taut polyline vs Verlet chain
+    var get_vl: Callable = func(): return use_verlet
+    var set_vl: Callable = func(v): _set_verlet(v)
+    dev_menu.add_toggle("Verlet rope (A/B)", get_vl, set_vl)
+
     var get_bt: Callable = func(): return break_time
     var set_bt: Callable = func(v): break_time = v
     dev_menu.add_slider("Break time s", 0.0, 2.0, 0.1, get_bt, set_bt)
@@ -262,9 +288,9 @@ func _physics_process(delta: float) -> void:
     _update_hud()
     queue_redraw()
 
-    if rope_pen_probe and not panicking:
+    if rope_pen_probe and not panicking and not use_verlet:
         _check_rope_pen()
-    if pivot_linger:
+    if pivot_linger and not use_verlet:
         _update_pivot_linger(delta)
 
     # Teleport detector: a single-frame jump bigger than ~1.5 cells while not in
@@ -375,6 +401,8 @@ func _end_panic() -> void:
     panic.value = 0.0
     rope.pivots.clear()
     rope.rope_out = rope.max_length * 0.5
+    if use_verlet:
+        rope._inited = false             # re-derive the chain straight to the new spawn
 
 
 func _reset() -> void:
@@ -386,10 +414,12 @@ func _reset() -> void:
     panic.value = 0.0
     rope.pivots.clear()
     rope.rope_out = rope.max_length * 0.5
+    if use_verlet:
+        rope._inited = false             # re-derive the chain straight to the new spawn
 
 
 func _update_hud() -> void:
-    var used_m := rope.used_length(player.position) / PPM
+    var used_m: float = rope.used_length(player.position) / PPM
     var status := ("[ EMERGENCY RESCUE ]" if emergency else ("[ RESCUE ]" if panicking else ""))
     hud.text = "ROPE  out %.1fm / max %.1fm  used %.1fm  pivots %d\n" % [
         rope.rope_out / PPM, rope.max_length / PPM, used_m, rope.pivots.size()]
@@ -568,17 +598,22 @@ func _draw() -> void:
     if rope == null or player == null:
         return
 
-    # rope polyline: anchor -> pivots... -> player
-    var pts: Array = [rope.anchor]
-    for p in rope.pivots:
-        pts.append(p["pos"])
-    pts.append(player.position)
+    # rope: Verlet draws its point chain; polyline draws anchor -> pivots -> player
+    var pts: Array = []
+    if use_verlet:
+        pts = rope.points.duplicate()
+    else:
+        pts = [rope.anchor]
+        for p in rope.pivots:
+            pts.append(p["pos"])
+        pts.append(player.position)
     for i in range(pts.size() - 1):
         draw_line(pts[i], pts[i + 1], Color(0.20, 0.50, 1.0), 2.0)
 
     draw_circle(rope.anchor, 5.0, Color(0.60, 0.40, 0.20))   # winch
-    for p in rope.pivots:
-        draw_circle(p["pos"], 4.0, Color(1.0, 0.30, 0.30))   # wrap corners
+    if not use_verlet:
+        for p in rope.pivots:
+            draw_circle(p["pos"], 4.0, Color(1.0, 0.30, 0.30))   # wrap corners
 
     # pivot linger: fading cyan ghosts of recent pivots, labelled with corner dir
     if pivot_linger:

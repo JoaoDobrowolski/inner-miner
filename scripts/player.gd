@@ -20,10 +20,8 @@ var he := Vector2(11, 14)           # half extents (< 16 so it fits a 32px cell 
 # Dev-toggleable abilities (off by default; flipped from the dev menu).
 var max_air_jumps := 0              # air jumps (dev-only; 0 = base game, single ground jump)
 var high_jump_enabled := false      # ~2x jump height (height scales with v^2)
-var reel_hop_enabled := false       # dev: 1 mid-air hop while reeling, refreshed on new contact
+var reel_hop_enabled := true        # base mechanic: tap W mid-air while reeling (SPACE) to hop
 var _air_jumps_used := 0
-var _reel_hop_available := false    # the reel-hop charge (granted on a new solid contact)
-var _was_touching := false          # touched a solid last frame (for edge-triggered refresh)
 
 var world: GridWorld
 var rope                            # Rope or RopeVerlet (duck-typed: same surface)
@@ -77,17 +75,11 @@ func _physics_process(delta: float) -> void:
         velocity = Vector2.ZERO
         rope.restore()
 
-    # Reel-hop charge: refresh only on a NEW solid contact (edge-triggered) so it
-    # can't be spammed while hugging a wall in a tight shaft. Spent in _try_jump.
-    var touching := _touching_solid()
-    if touching and not _was_touching:
-        _reel_hop_available = true
-    _was_touching = touching
-
 
 func _unhandled_input(event: InputEvent) -> void:
     if event is InputEventKey and event.pressed and not event.echo:
-        if event.physical_keycode == KEY_SPACE or event.physical_keycode == KEY_W:
+        # W jumps (and also digs up). SPACE is the reel key now, not a jump.
+        if event.physical_keycode == KEY_W:
             _try_jump()
 
 
@@ -103,11 +95,10 @@ func _try_jump() -> void:
         velocity.y = jv
         _air_jumps_used += 1
         return
-    # reel hop (dev): one mid-air hop while being reeled; the charge is regained
-    # only by touching a new wall/corner (see the edge-triggered refresh above).
-    if reel_hop_enabled and rope.reeling and _reel_hop_available:
+    # reel hop: while reeling (holding SPACE), a W tap kicks off a mid-air hop.
+    # Key-repeat is filtered (not event.echo), so one tap = one hop -- no held spam.
+    if reel_hop_enabled and rope.reeling:
         velocity.y = jv
-        _reel_hop_available = false
 
 
 func _read_horizontal(delta: float) -> void:
@@ -187,22 +178,6 @@ func _check_below() -> bool:
     var lx := floori((position.x - he.x + 1.0) / c)
     var rx := floori((position.x + he.x - 1.0) / c)
     return world.is_solid(lx, cy) or world.is_solid(rx, cy)
-
-
-# True if a solid sits within a couple px of the player's box on any side
-# (floor, ceiling or wall). Used to grant the reel-hop charge on contact.
-func _touching_solid() -> bool:
-    var c := GridWorld.CELL
-    var pad := 1.5
-    var minx := floori((position.x - he.x - pad) / c)
-    var maxx := floori((position.x + he.x + pad) / c)
-    var miny := floori((position.y - he.y - pad) / c)
-    var maxy := floori((position.y + he.y + pad) / c)
-    for cy in range(miny, maxy + 1):
-        for cx in range(minx, maxx + 1):
-            if world.is_solid(cx, cy):
-                return true
-    return false
 
 
 # Push the player out of any solid it overlaps, along the axis of least

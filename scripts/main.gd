@@ -3,7 +3,7 @@ extends Node2D
 # Wires the prototype together: world, player, rope, camera, input and HUD.
 
 const PPM := 16.0                   # pixels per meter (cell 32px = 2m), for display only
-const MAX_ROPE_METERS := 30.0
+const MAX_ROPE_METERS := 50.0
 const DEFAULT_ZOOM := 1.4
 const DEFAULT_BAG := 20
 
@@ -59,8 +59,9 @@ var _ghosts: Array = []          # each: { "pos": Vector2, "dir": String, "life"
 var _prev_piv: Array = []        # previous frame's pivot positions (add/remove diff)
 
 # digging: hold a direction into a solid; it breaks after break_time seconds
-var break_time := 0.5
+var break_time := 0.5              # dev base time; actual time scales by depth + ore (see GridWorld.mine_time)
 var _dig_timer := 0.0
+var _dig_need := 0.0               # seconds needed to break the current target (cached on retarget)
 var _dig_target := Vector2i(-2, -2)
 
 var _spawn := Vector2.ZERO
@@ -74,7 +75,9 @@ func _ready() -> void:
     add_child(world)
 
     var sx := int(GridWorld.W / 2)
-    _anchor_pos = Vector2((sx + 0.5) * GridWorld.CELL, 1.0 * GridWorld.CELL)
+    # Winch (future: old man at a windlass) sits at the pit mouth, on the surface,
+    # centered over the 2-wide entry hole -- not floating up in the sky.
+    _anchor_pos = Vector2(sx * GridWorld.CELL, (GridWorld.GROUND - 1) * GridWorld.CELL)
     rope = _make_rope(MAX_ROPE_METERS * PPM)
     panic = PanicSystem.new()
     backpack = Backpack.new()
@@ -197,11 +200,6 @@ func _build_dev_menu(layer: CanvasLayer) -> void:
     var set_aj: Callable = func(v): player.max_air_jumps = int(v)
     dev_menu.add_slider("Air jumps", 0.0, 5.0, 1.0, get_aj, set_aj)
 
-    # reel hop: 1 mid-air hop while reeling (J), refreshed on a new wall contact
-    var get_rh: Callable = func(): return player.reel_hop_enabled
-    var set_rh: Callable = func(v): player.reel_hop_enabled = v
-    dev_menu.add_toggle("Reel hop", get_rh, set_rh)
-
     var get_hj: Callable = func(): return player.high_jump_enabled
     var set_hj: Callable = func(v): player.high_jump_enabled = v
     dev_menu.add_toggle("High jump 2x", get_hj, set_hj)
@@ -211,24 +209,14 @@ func _build_dev_menu(layer: CanvasLayer) -> void:
     var set_be: Callable = func(v): block_edit = v
     dev_menu.add_toggle("Block edit LMB/RMB", get_be, set_be)
 
-    # rope penetration probe: logs px depth of any real rope-vs-block crossing
-    var get_pen: Callable = func(): return rope_pen_probe
-    var set_pen: Callable = func(v): rope_pen_probe = v; _pen_armed = true
-    dev_menu.add_toggle("Rope pen probe (log)", get_pen, set_pen)
-
     # pivot linger: ghost released pivots + log pivot add/remove with corner dir
     var get_lg: Callable = func(): return pivot_linger
     var set_lg: Callable = func(v): pivot_linger = v; rope.debug_log = v; _ghosts.clear(); _prev_piv.clear()
     dev_menu.add_toggle("Pivot linger (dbg)", get_lg, set_lg)
 
-    # rope backend A/B: taut polyline vs Verlet chain
-    var get_vl: Callable = func(): return use_verlet
-    var set_vl: Callable = func(v): _set_verlet(v)
-    dev_menu.add_toggle("Verlet rope (A/B)", get_vl, set_vl)
-
     var get_bt: Callable = func(): return break_time
     var set_bt: Callable = func(v): break_time = v
-    dev_menu.add_slider("Break time s", 0.0, 2.0, 0.1, get_bt, set_bt)
+    dev_menu.add_slider("Dig base s", 0.0, 2.0, 0.1, get_bt, set_bt)
 
     dev_menu.add_button_row("Reset to defaults", _dev_reset_defaults, "GOD MODE", _dev_god_mode)
 
@@ -269,7 +257,7 @@ func _dev_reset_defaults() -> void:
     break_time = 0.5
     player.max_air_jumps = 0
     player.high_jump_enabled = false
-    player.reel_hop_enabled = false
+    player.reel_hop_enabled = true          # reel hop is a base mechanic now
     dev_menu.refresh()
 
 
@@ -290,7 +278,7 @@ func _update_camera(delta: float) -> void:
 
 
 func _physics_process(delta: float) -> void:
-    rope.reeling = Input.is_physical_key_pressed(KEY_J) and not panicking
+    rope.reeling = Input.is_physical_key_pressed(KEY_SPACE) and not panicking
     if panicking:
         if rope.rewind_step(player, delta):
             _end_panic()
@@ -335,6 +323,8 @@ func _unhandled_input(event: InputEvent) -> void:
                 dev_menu.toggle()
             KEY_K:
                 _start_panic()
+            KEY_X:
+                rope.toggle_lock(player)        # lock/unlock rope at current let-out
             KEY_T:
                 _place_torch()
             KEY_G:
@@ -383,8 +373,9 @@ func _update_digging(delta: float) -> void:
     if target != _dig_target:
         _dig_target = target
         _dig_timer = 0.0
+        _dig_need = world.mine_time(target.x, target.y, break_time)
     _dig_timer += delta
-    if _dig_timer >= break_time:
+    if _dig_timer >= _dig_need:
         # Ore in a full backpack stays in the wall instead of being wasted.
         var tc := world.get_cell(target.x, target.y)
         if GridWorld.is_ore_cell(tc) and backpack.is_full():
@@ -435,14 +426,16 @@ func _start_panic() -> void:
     panicking = true
     player.rewinding = true
     player.velocity = Vector2.ZERO
-    rope.start_rewind()
+    # Smooth exit instead of a teleport: climb the rope to the winch at the pit
+    # mouth, then slide along the surface to the spawn spot beside the shaft.
+    rope.start_rewind([_spawn])
 
 
 func _end_panic() -> void:
     panicking = false
     emergency = false
     player.rewinding = false
-    player.position = _spawn                 # land on solid ground, not over the open shaft
+    player.position = _spawn                 # safety: rewind already ends here (smooth exit)
     player.velocity = Vector2.ZERO
     panic.value = 0.0
     rope.pivots.clear()
@@ -473,8 +466,9 @@ func _reset() -> void:
 func _update_hud() -> void:
     var used_m: float = rope.used_length(player.position) / PPM
     var status := ("[ EMERGENCY RESCUE ]" if emergency else ("[ RESCUE ]" if panicking else ""))
-    hud.text = "ROPE  out %.1fm / max %.1fm  used %.1fm  pivots %d\n" % [
-        rope.rope_out / PPM, rope.max_length / PPM, used_m, rope.pivots.size()]
+    var lock_str := "  LOCK %.1fm" % (rope.lock_length / PPM) if rope.locked else ""
+    hud.text = "ROPE  out %.1fm / max %.1fm  used %.1fm  pivots %d%s\n" % [
+        rope.rope_out / PPM, rope.max_length / PPM, used_m, rope.pivots.size(), lock_str]
     hud.text += "PANIC %d%%   torches %d   %s\n" % [int(panic.value), torches.size(), status]
     var bag_warn := "  [FULL]" if backpack.is_full() else ""
     hud.text += "BAG %d/%d  value $%d%s   WALLET $%d\n" % [backpack.count(), backpack.capacity, backpack.value(), bag_warn, wallet]
@@ -485,10 +479,13 @@ func _update_hud() -> void:
     hud.text += "POS x=%.0f y=%.0f  cell=(%d,%d)  depth=%.0fm  ground=%s  vel=(%.0f,%.0f)\n" % [
         player.position.x, player.position.y, pc.x, pc.y, depth_m,
         str(player.on_ground), player.velocity.x, player.velocity.y]
-    hud.text += "A/D move·swing  SPACE jump  dig: S down · W up · hold A/D into wall  J=reel  T=torch  K=rescue  R=reset  G=regen  F1=debug  F3=dev"
+    hud.text += "A/D move·swing  W jump/dig up  dig: S down · hold A/D into wall  SPACE=reel  X=lock rope  T=torch  K=rescue  R=reset  G=regen  F1=debug  F3=dev"
 
     var f := clampf(panic.value / 100.0, 0.0, 1.0)
-    panic_overlay.color.a = f * 0.45
+    # Screen distortion (red vignette) only kicks in past the halfway mark; the
+    # bottom-left bar still shows the true 0-100% value.
+    var vis := clampf((f - 0.5) / 0.5, 0.0, 1.0)
+    panic_overlay.color.a = vis * 0.45
     panic_fill.offset_right = panic_fill.offset_left + 216.0 * f
     panic_fill.color = Color(0.2, 0.8, 0.3).lerp(Color(0.9, 0.1, 0.1), f)
 
@@ -664,7 +661,10 @@ func _draw() -> void:
     for i in range(pts.size() - 1):
         draw_line(pts[i], pts[i + 1], Color(0.20, 0.50, 1.0), 2.0)
 
-    draw_circle(rope.anchor, 5.0, Color(0.60, 0.40, 0.20))   # winch
+    # winch at the pit mouth: a support bar across the hole + the drum (placeholder
+    # for the old man at a windlass)
+    draw_line(rope.anchor + Vector2(-18, -2), rope.anchor + Vector2(18, -2), Color(0.45, 0.30, 0.15), 4.0)
+    draw_circle(rope.anchor, 6.0, Color(0.60, 0.40, 0.20))   # winch drum
     if not use_verlet:
         for p in rope.pivots:
             draw_circle(p["pos"], 4.0, Color(1.0, 0.30, 0.30))   # wrap corners
@@ -680,10 +680,10 @@ func _draw() -> void:
                     HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(0.3, 0.95, 1.0, a))
 
     # dig progress feedback on the targeted block
-    if _dig_target.x >= 0 and _dig_timer > 0.0 and break_time > 0.0:
+    if _dig_target.x >= 0 and _dig_timer > 0.0 and _dig_need > 0.0:
         var dc := GridWorld.CELL
         var r := Rect2(_dig_target.x * dc, _dig_target.y * dc, dc, dc)
-        var prog := clampf(_dig_timer / break_time, 0.0, 1.0)
+        var prog := clampf(_dig_timer / _dig_need, 0.0, 1.0)
         draw_rect(r, Color(1, 1, 1, 0.12), true)
         draw_rect(Rect2(r.position, Vector2(dc * prog, 5)), Color(1.0, 0.9, 0.3, 0.9), true)
 

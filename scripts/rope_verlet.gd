@@ -21,6 +21,11 @@ var reeling := false
 var debug_log := false
 var pivots: Array = []              # interface stub (always empty; Verlet has no pivots)
 
+# Manual lock parity with Rope (X key). Verlet has no smooth-exit waypoints, but the
+# lock/HUD/rescue interface must match so the backend stays swappable.
+var locked := false
+var lock_length := 0.0
+
 # --- feel tunables ---------------------------------------------------------
 var point_count := 36
 var iterations := 24
@@ -109,13 +114,16 @@ func constrain(player, delta: float) -> void:
         _init_chain(ppos)               # self-heal if a restore() left the chain empty
 
     var used := used_length(ppos)
+    var cap := lock_length if locked else max_length
     if reeling:
         rope_out = max(rope_out - reel_speed * delta, min_out)
+        if locked:
+            lock_length = clampf(min(lock_length, rope_out), min_out, max_length)  # ratchet down
     elif player.on_ground:
-        rope_out = min(used, max_length)
+        rope_out = min(used, cap)
     elif used > rope_out:
-        rope_out = min(used, max_length)
-    rope_out = clampf(rope_out, min_out, max_length)
+        rope_out = min(used, cap)
+    rope_out = clampf(rope_out, min_out, cap)
 
     # Leash: the rope only acts at its LIMIT. Within reach the player moves under
     # its own physics with NO drag; only when fully extended does it clamp + kill
@@ -279,8 +287,15 @@ func _chord_blocked(a: Vector2, b: Vector2) -> bool:
 
 
 # --- panic rescue: reel the player up toward the anchor ---------------------
-func start_rewind() -> void:
-    pass                                            # nothing to precompute; reel below
+func toggle_lock(player) -> void:
+    locked = not locked
+    if locked:
+        lock_length = clampf(maxf(rope_out, used_length(player.position)), min_out, max_length)
+
+
+func start_rewind(_extra_exit: Array = []) -> void:
+    locked = false                                  # a rescue overrides any manual lock
+    # Verlet rewind just reels straight to the winch; exit waypoints aren't modeled.
 
 func rewind_step(player, delta: float) -> bool:
     player.velocity = Vector2.ZERO

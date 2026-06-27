@@ -20,6 +20,11 @@ var reel_speed := 220.0
 var rewind_speed := 1000.0
 var reeling := false
 
+# Manual lock (X): cap how much rope can be let out below max_length, so the player
+# can hang at a chosen depth (e.g. 40m on a 50m rope). Reeling ratchets the lock down.
+var locked := false
+var lock_length := 0.0
+
 var _rewind_targets: Array = []
 
 
@@ -73,20 +78,31 @@ func relax(player) -> void:
 
 # --- per-frame constraint (called by the player after it moves) -------------
 
+# Lock the rope at its current let-out (X), or release it back to max. Locking
+# freezes payout so the player hangs at this length; releasing restores max_length.
+func toggle_lock(player) -> void:
+    locked = not locked
+    if locked:
+        lock_length = clampf(maxf(rope_out, used_length(player.position)), min_out, max_length)
+
+
 func constrain(player, delta: float) -> void:
     _update_wrap(player.position)
 
     var used := used_length(player.position)
+    var cap := lock_length if locked else max_length
 
     # rope_out is always relative to the player's current position (no drift).
     if reeling:
         rope_out = max(used - reel_speed * delta, min_out)
+        if locked:
+            lock_length = clampf(min(lock_length, rope_out), min_out, max_length)  # ratchet down
     elif player.on_ground:
-        rope_out = min(used, max_length)
+        rope_out = min(used, cap)
     elif used > rope_out:
-        rope_out = min(used, max_length)
+        rope_out = min(used, cap)
 
-    rope_out = clampf(rope_out, 0.0, max_length)
+    rope_out = clampf(rope_out, 0.0, cap)
     _limit_to_budget(player, rope_out)
 
 
@@ -279,11 +295,16 @@ func _los_blocked(a: Vector2, b: Vector2) -> bool:
 
 # --- panic rescue: rewind along the exact path (unwrap then climb) ----------
 
-func start_rewind() -> void:
+func start_rewind(extra_exit: Array = []) -> void:
+    locked = false                              # a rescue overrides any manual lock
     _rewind_targets.clear()
     for i in range(pivots.size() - 1, -1, -1):
         _rewind_targets.append(pivots[i]["pos"])
     _rewind_targets.append(anchor)
+    # Extra waypoints (e.g. slide along the surface, step down beside the shaft)
+    # so the climb-out reads smoothly instead of snapping at the winch.
+    for p in extra_exit:
+        _rewind_targets.append(p)
 
 
 func rewind_step(player, delta: float) -> bool:

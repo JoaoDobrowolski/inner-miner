@@ -100,6 +100,25 @@ static func is_ore_cell(v: int) -> bool:
     return v == Cell.COAL or v == Cell.COPPER or v == Cell.IRON or v == Cell.CRYSTAL
 
 
+# Per-ore hardness multiplier. Kept modest on purpose: depth is the main driver,
+# ore type just adds a small extra cost so richer ore is worth a bit more time.
+const MINE_HARDNESS := {
+    Cell.STONE: 1.0,
+    Cell.COAL: 1.1,
+    Cell.COPPER: 1.2,
+    Cell.IRON: 1.3,
+    Cell.CRYSTAL: 1.45,
+}
+
+# Seconds to break the block at (cx,cy), given the dev base time. Depth ramps the
+# cost gently (2x around 250m, 3x around 500m); ore type applies the small mult.
+func mine_time(cx: int, cy: int, base: float) -> float:
+    var mult: float = MINE_HARDNESS.get(get_cell(cx, cy), 1.0)
+    var depth_m: float = maxf(0.0, (cy - GROUND) * 2.0)
+    var depth_mult := 1.0 + depth_m / 250.0
+    return base * mult * depth_mult
+
+
 # Mine a cell. Returns the cell type that was removed, or -1 if nothing diggable.
 func dig(cx: int, cy: int) -> int:
     if is_diggable(cx, cy):

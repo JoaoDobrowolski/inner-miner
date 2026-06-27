@@ -24,6 +24,15 @@ var wallet := 0
 var _flash := ""                   # transient HUD message (sells / rescue penalty)
 var _flash_t := 0.0
 
+# Character-stat upgrades bought at the surface (progression lives on the miner,
+# not on loot). Levels persist across dives/resets within a session; no disk save
+# yet. _apply_upgrades() maps each level onto the live systems.
+# NOTE: "rope" (alcance) is here as a pragmatic depth-gate for now; per the lore it
+# should migrate to the prestige axis once that system exists (see economic-loop memo).
+var upgrades := {"bag": 0, "dig": 0, "panic": 0, "reel": 0, "rope": 0}
+var _dig_speed_mult := 1.0         # <1 = faster digging (mining-efficiency upgrade)
+var shop: Shop
+
 var panicking := false
 var emergency := false
 var debug_view := false
@@ -96,6 +105,7 @@ func _ready() -> void:
     camera.make_current()
 
     _build_hud()
+    _apply_upgrades()
 
 
 # Build the active rope backend at the current anchor with the given max length.
@@ -163,6 +173,7 @@ func _build_hud() -> void:
     layer.add_child(hud)
 
     _build_dev_menu(layer)
+    _build_shop(layer)
 
 
 func _build_dev_menu(layer: CanvasLayer) -> void:
@@ -219,6 +230,61 @@ func _build_dev_menu(layer: CanvasLayer) -> void:
     dev_menu.add_slider("Dig base s", 0.0, 2.0, 0.1, get_bt, set_bt)
 
     dev_menu.add_button_row("Reset to defaults", _dev_reset_defaults, "GOD MODE", _dev_god_mode)
+
+
+# Surface shop: 4 character stats. Cost grows ~1.7x per level; cap at level 6.
+func _build_shop(layer: CanvasLayer) -> void:
+    shop = Shop.new()
+    shop.anchor_left = 0.5
+    shop.anchor_right = 0.5
+    shop.offset_left = -180
+    shop.offset_right = 180
+    shop.offset_top = 150
+    shop.visible = false
+    layer.add_child(shop)
+
+    shop.wallet_getter = func(): return wallet
+    shop.spend = func(cost: int) -> bool:
+        if wallet >= cost:
+            wallet -= cost
+            return true
+        return false
+
+    var MAX_LV := 6
+    shop.add_upgrade("Mochila (capacidade)", func(): return upgrades["bag"], MAX_LV,
+        func(lvl): return _upgrade_cost(30, lvl),
+        func(): upgrades["bag"] += 1; _apply_upgrades())
+    shop.add_upgrade("Eficiência de mineração", func(): return upgrades["dig"], MAX_LV,
+        func(lvl): return _upgrade_cost(40, lvl),
+        func(): upgrades["dig"] += 1; _apply_upgrades())
+    shop.add_upgrade("Resistência à claustrofobia", func(): return upgrades["panic"], MAX_LV,
+        func(lvl): return _upgrade_cost(40, lvl),
+        func(): upgrades["panic"] += 1; _apply_upgrades())
+    shop.add_upgrade("Velocidade de subida", func(): return upgrades["reel"], MAX_LV,
+        func(lvl): return _upgrade_cost(25, lvl),
+        func(): upgrades["reel"] += 1; _apply_upgrades())
+    # Rope reach: the depth-gate. More levels (10) and a steeper base so it stays the
+    # long-tail sink; migrates to prestige later.
+    shop.add_upgrade("Alcance da corda (+20m)", func(): return upgrades["rope"], 10,
+        func(lvl): return _upgrade_cost(50, lvl),
+        func(): upgrades["rope"] += 1; _apply_upgrades())
+    shop.refresh()
+
+
+# Price for the next level of a stat: base * 1.7^current_level (rounded).
+func _upgrade_cost(base: int, level: int) -> int:
+    return int(round(base * pow(1.7, level)))
+
+
+# Map upgrade levels onto the live systems. Idempotent: safe to call any time.
+func _apply_upgrades() -> void:
+    backpack.capacity = DEFAULT_BAG + 8 * int(upgrades["bag"])
+    _dig_speed_mult = pow(0.88, int(upgrades["dig"]))     # ~12% faster dig per level
+    panic.fill_mult = pow(0.85, int(upgrades["panic"]))   # ~15% slower panic per level
+    rope.reel_speed = 220.0 + 40.0 * int(upgrades["reel"])
+    rope.max_length = (MAX_ROPE_METERS + 20.0 * int(upgrades["rope"])) * PPM
+    if shop != null:
+        shop.refresh()
 
 
 func _set_claustro_off(v: bool) -> void:
@@ -280,6 +346,13 @@ func _update_camera(delta: float) -> void:
 func _physics_process(delta: float) -> void:
     rope.reeling = Input.is_physical_key_pressed(KEY_SPACE) and not panicking
     if panicking:
+        # Don't freeze the bar during a pull-up: it keeps reacting to where the
+        # player is and drains naturally as they near the surface (reset on finish).
+        # If it maxes out mid-climb, the rescue is promoted to a penalised emergency.
+        if not claustrophobia_off:
+            panic.update(delta, player.position, world, torches)
+            if panic.value >= 100.0:
+                emergency = true
         if rope.rewind_step(player, delta):
             _end_panic()
     elif not claustrophobia_off:
@@ -292,6 +365,7 @@ func _physics_process(delta: float) -> void:
     _update_block_edit()
     _update_digging(delta)
     _sell_on_surface()
+    _update_shop()
     if _flash_t > 0.0:
         _flash_t -= delta
     _update_hud()
@@ -321,7 +395,7 @@ func _unhandled_input(event: InputEvent) -> void:
                 debug_view = not debug_view
             KEY_F3:
                 dev_menu.toggle()
-            KEY_K:
+            KEY_C:
                 _start_panic()
             KEY_X:
                 rope.toggle_lock(player)        # lock/unlock rope at current let-out
@@ -373,7 +447,7 @@ func _update_digging(delta: float) -> void:
     if target != _dig_target:
         _dig_target = target
         _dig_timer = 0.0
-        _dig_need = world.mine_time(target.x, target.y, break_time)
+        _dig_need = world.mine_time(target.x, target.y, break_time * _dig_speed_mult)
     _dig_timer += delta
     if _dig_timer >= _dig_need:
         # Ore in a full backpack stays in the wall instead of being wasted.
@@ -420,6 +494,15 @@ func _sell_on_surface() -> void:
     _flash_t = 2.5
 
 
+# The shop is only reachable standing safely on the surface (not mid-rescue). It
+# refreshes live so prices grey out as the wallet changes from auto-selling.
+func _update_shop() -> void:
+    var show := _on_surface() and not panicking and not player.rewinding
+    shop.visible = show
+    if show:
+        shop.refresh()
+
+
 func _start_panic() -> void:
     if panicking:
         return
@@ -432,6 +515,7 @@ func _start_panic() -> void:
 
 
 func _end_panic() -> void:
+    var was_emergency := emergency           # how the rescue started decides the cost
     panicking = false
     emergency = false
     player.rewinding = false
@@ -442,12 +526,14 @@ func _end_panic() -> void:
     rope.rope_out = rope.max_length * 0.5
     if use_verlet:
         rope._inited = false             # re-derive the chain straight to the new spawn
-    # emergency rescue costs: spill half the load, then the surface sells the rest
-    var lost := backpack.drop_half()
-    var earned := _do_sell()
-    if lost > 0 or earned > 0:
-        _flash = "RESCUED — spilled -$%d, sold +$%d" % [lost, earned]
-        _flash_t = 3.5
+    # Penalty ONLY on an auto emergency (bar hit 100%): spill half the load, sell the
+    # rest. A manual pull-up (K) is free -- the surface auto-sell handles the load.
+    if was_emergency:
+        var lost := backpack.drop_half()
+        var earned := _do_sell()
+        if lost > 0 or earned > 0:
+            _flash = "EMERGENCY — spilled -$%d, sold +$%d" % [lost, earned]
+            _flash_t = 3.5
 
 
 func _reset() -> void:
@@ -479,7 +565,7 @@ func _update_hud() -> void:
     hud.text += "POS x=%.0f y=%.0f  cell=(%d,%d)  depth=%.0fm  ground=%s  vel=(%.0f,%.0f)\n" % [
         player.position.x, player.position.y, pc.x, pc.y, depth_m,
         str(player.on_ground), player.velocity.x, player.velocity.y]
-    hud.text += "A/D move·swing  W jump/dig up  dig: S down · hold A/D into wall  SPACE=reel  X=lock rope  T=torch  K=rescue  R=reset  G=regen  F1=debug  F3=dev"
+    hud.text += "A/D move·swing  W jump/dig up  dig: S down · hold A/D into wall  SPACE=reel  X=lock rope  T=torch  C=rescue  R=reset  G=regen  F1=debug  F3=dev"
 
     var f := clampf(panic.value / 100.0, 0.0, 1.0)
     # Screen distortion (red vignette) only kicks in past the halfway mark; the

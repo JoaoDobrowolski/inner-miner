@@ -7,10 +7,11 @@ extends RefCounted
 
 var value := 0.0
 
-var base_rate := 1.5          # %/s just from being underground
-var depth_rate := 0.10        # extra %/s per meter of depth
-var tight_rate := 8.0         # extra %/s in a 1-wide tunnel
+var base_rate := 0.75         # %/s just from being underground (~2x slower to fill)
+var depth_rate := 0.05        # extra %/s per meter of depth
+var tight_rate := 4.0         # extra %/s in a 1-wide tunnel
 var recover_rate := 28.0      # %/s inside a safe zone (torch / surface)
+var fill_mult := 1.0          # claustrophobia-resistance upgrade scales the fill rate down
 var torch_radius := 110.0
 
 
@@ -21,7 +22,7 @@ func update(delta: float, player_pos: Vector2, world: GridWorld, torches: Array)
     var rate := base_rate + depth_rate * _depth_meters(player_pos)
     if _is_tight(player_pos, world):
         rate += tight_rate
-    value = min(value + rate * delta, 100.0)
+    value = min(value + rate * fill_mult * delta, 100.0)
 
 
 func _depth_meters(player_pos: Vector2) -> float:

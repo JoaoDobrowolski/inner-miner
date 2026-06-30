@@ -232,7 +232,11 @@ func _build_dev_menu(layer: CanvasLayer) -> void:
     dev_menu.add_button_row("Reset to defaults", _dev_reset_defaults, "GOD MODE", _dev_god_mode)
 
 
-# Surface shop: 4 character stats. Cost grows ~1.7x per level; cap at level 6.
+# Surface shop: 5 character stats. Cost grows ~1.55x per level; cap at level 6
+# (rope at 10). Bases are tuned low and staggered so the FIRST buy of each line
+# lands after ~1 descent (the hook), while the 1.55x ramp keeps the long tail. Rope
+# is the cheapest line on purpose: it is the depth gate that unlocks richer ore, so
+# rushing it compounds earnings -- the core "just one more dive" loop.
 func _build_shop(layer: CanvasLayer) -> void:
     shop = Shop.new()
     shop.anchor_left = 0.5
@@ -252,28 +256,32 @@ func _build_shop(layer: CanvasLayer) -> void:
 
     var MAX_LV := 6
     shop.add_upgrade("Mochila (capacidade)", func(): return upgrades["bag"], MAX_LV,
-        func(lvl): return _upgrade_cost(30, lvl),
+        func(lvl): return _upgrade_cost(16, lvl),
         func(): upgrades["bag"] += 1; _apply_upgrades())
     shop.add_upgrade("Eficiência de mineração", func(): return upgrades["dig"], MAX_LV,
-        func(lvl): return _upgrade_cost(40, lvl),
+        func(lvl): return _upgrade_cost(20, lvl),
         func(): upgrades["dig"] += 1; _apply_upgrades())
     shop.add_upgrade("Resistência à claustrofobia", func(): return upgrades["panic"], MAX_LV,
-        func(lvl): return _upgrade_cost(40, lvl),
+        func(lvl): return _upgrade_cost(20, lvl),
         func(): upgrades["panic"] += 1; _apply_upgrades())
     shop.add_upgrade("Velocidade de subida", func(): return upgrades["reel"], MAX_LV,
-        func(lvl): return _upgrade_cost(25, lvl),
+        func(lvl): return _upgrade_cost(14, lvl),
         func(): upgrades["reel"] += 1; _apply_upgrades())
-    # Rope reach: the depth-gate. More levels (10) and a steeper base so it stays the
-    # long-tail sink; migrates to prestige later.
-    shop.add_upgrade("Alcance da corda (+20m)", func(): return upgrades["rope"], 10,
-        func(lvl): return _upgrade_cost(50, lvl),
+    # Rope reach: the depth-gate and the cheapest line, so the player rushes it.
+    # Bigger +25m step (was +20m) + a low base so the first dive funds it -- the
+    # compounding hook. 10 levels; migrates to prestige later.
+    shop.add_upgrade("Alcance da corda (+25m)", func(): return upgrades["rope"], 10,
+        func(lvl): return _upgrade_cost(12, lvl),
         func(): upgrades["rope"] += 1; _apply_upgrades())
     shop.refresh()
 
 
-# Price for the next level of a stat: base * 1.7^current_level (rounded).
+# Price for the next level of a stat: base * 1.55^current_level (rounded). The
+# gentle 1.55x ramp (was 1.7x) keeps early buys close together so there is almost
+# always something affordable -- the "one more dive" pull -- while the caps bound
+# the late cost.
 func _upgrade_cost(base: int, level: int) -> int:
-    return int(round(base * pow(1.7, level)))
+    return int(round(base * pow(1.55, level)))
 
 
 # Map upgrade levels onto the live systems. Idempotent: safe to call any time.
@@ -282,7 +290,7 @@ func _apply_upgrades() -> void:
     _dig_speed_mult = pow(0.88, int(upgrades["dig"]))     # ~12% faster dig per level
     panic.fill_mult = pow(0.85, int(upgrades["panic"]))   # ~15% slower panic per level
     rope.reel_speed = 220.0 + 40.0 * int(upgrades["reel"])
-    rope.max_length = (MAX_ROPE_METERS + 20.0 * int(upgrades["rope"])) * PPM
+    rope.max_length = (MAX_ROPE_METERS + 25.0 * int(upgrades["rope"])) * PPM
     if shop != null:
         shop.refresh()
 

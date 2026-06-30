@@ -15,7 +15,7 @@ const FUNNELS := [60, 120, 180]   # depths where the map necks down to a gate (b
 # --- funnel walls (unbreakable) --------------------------------------------
 # The map funnels with unbreakable DIRT so the player can't run to the map edges
 # early. Pickaxe-not-shovel framing: dirt/grass can't be mined, only STONE can.
-# The breakable interior channel widens from the 2-wide entry hole down to nearly
+# The breakable interior channel widens from the 3-wide entry hole down to nearly
 # the full map width, then necks back to a gate at each FUNNELS depth.
 const EDGE := 2                  # permanent bedrock border (cols per side)
 const WALL_MAX := (W >> 1) - EDGE   # widest the interior half-channel ever gets (22)
@@ -193,9 +193,9 @@ func _compute_walls() -> void:
     var sr := 0
     for cy in range(H):
         if cy <= GROUND + 2:
-            hl = 1; hr = 1; sl = 0; sr = 0          # hold the 2-wide hole through the dirt lip
+            hl = 1; hr = 2; sl = 0; sr = 0          # hold the 3-wide hole through the dirt lip
             _wl[cy] = cx - 1
-            _wr[cy] = cx + 1
+            _wr[cy] = cx + 2
             continue
         var t := _wall_target(cy)
         var rl := _walk_step(hl, t, wrng, sl)
@@ -293,9 +293,10 @@ func _roll_ore(cx: int, cy: int) -> int:
 
 func _carve_start_shaft() -> void:
     var sx := W >> 1
-    for cy in range(GROUND, GROUND + 5):             # shallow ~5-deep entry hole (2 wide)
+    for cy in range(GROUND, GROUND + 5):             # shallow ~5-deep entry hole (3 wide)
         _force(sx - 1, cy, Cell.AIR)
         _force(sx, cy, Cell.AIR)
+        _force(sx + 1, cy, Cell.AIR)
 
 
 func _stamp_chunk(rows: Array, ox: int, oy: int) -> void:

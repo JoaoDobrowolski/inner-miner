@@ -84,9 +84,11 @@ func _ready() -> void:
     add_child(world)
 
     var sx := int(GridWorld.W / 2)
-    # Winch (future: old man at a windlass) sits at the pit mouth, on the surface,
-    # centered over the 2-wide entry hole -- not floating up in the sky.
-    _anchor_pos = Vector2(sx * GridWorld.CELL, (GridWorld.GROUND - 1) * GridWorld.CELL)
+    # Winch (future: old man at a windlass) sits ABOVE the surface, raised into the
+    # sky (row 2) and centered over the 3-wide entry hole's middle column. The
+    # height gives the rope a real pendulum pivot near the mouth, so the player can
+    # build sideways momentum ("roldana" climb via SPACE) instead of the rigid pull-up.
+    _anchor_pos = Vector2((sx + 0.5) * GridWorld.CELL, 2 * GridWorld.CELL)
     rope = _make_rope(MAX_ROPE_METERS * PPM)
     panic = PanicSystem.new()
     backpack = Backpack.new()

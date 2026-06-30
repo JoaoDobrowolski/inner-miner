@@ -56,10 +56,19 @@ the top and increasingly oppressive the deeper you go.
 
 ## Open questions
 
-- Map width at the start (~60 blocks to test in portrait).
-- Pendulum feel in portrait — *(rope prototype exists; see roadmap)*.
+- Map width at the start (~60 blocks to test in portrait; currently 48).
 - How tapes/diary deliver progressive lore without becoming a wall of text.
 - Whether combat ever leaves the freezer (out of scope for now; map + mining first).
+
+Resolved:
+- **Entry hole width → 3.** 1 strangled the pendulum exactly where it is first
+  taught; 3 keeps the mouth readable/forgiving and matches the "cozy surface"
+  pillar (the aperto lives in the depth, not the entrance).
+- **Pendulum near the surface → raised anchor.** The winch sits a few cells up in
+  the sky (row 2), centered on the hole, so there is a real pendulum pivot above
+  the mouth. The player can build sideways momentum and ascend by swinging +
+  reeling (SPACE, "roldana") instead of only the rigid pull-up. Costs ~6m of
+  reachable depth (rope spent on the sky segment) — accepted tradeoff.
 
 ---
 
@@ -83,8 +92,8 @@ Validate the riskiest mechanic before anything else.
   torches/surface, 100% → emergency rescue.
 - ✅ Hybrid map generation — **unbreakable funnel walls** (GRASS surface cap +
   packed DIRT walls; pickaxe-not-shovel framing, so only STONE/ore is diggable).
-  The breakable STONE channel widens from the 2-wide entry hole down to nearly the
-  full map width, then necks to a ~2-wide gate at each FUNNELS depth (boss rooms).
+  The breakable STONE channel widens from the 3-wide entry hole down to nearly
+  the full map width, then necks to a ~2-wide gate at each FUNNELS depth (boss rooms).
   Each wall is a per-side random walk with depth-drift + anti-stall forcing (a flat
   run of `STALL_MAX` rows forces a step). Noise caves & ore veins are confined to
   the breakable channel; injected chunks (rooms) on top.
@@ -116,12 +125,19 @@ The smallest loop that makes the game *a game*: mine → carry → sell → spen
 Deliverable: a player can descend, mine ore, risk the panic threshold, surface,
 sell, and see a wallet grow. No upgrades yet.
 
-## Phase 2 — Character progression 📋
+## Phase 2 — Character progression ✅ (pending balance pass)
 
-- Surface upgrade screen; spend currency on stats: claustrophobia resistance,
-  strength (dig speed), mining efficiency (yield), backpack capacity, manual climb
-  speed, rope length.
-- Each upgrade gated by cost curve; first pass at the power fantasy.
+- ✅ Surface upgrade shop (`shop.gd`, data-driven). Only visible standing safely on
+  the surface; refreshes live so prices grey out as the wallet changes. Spends
+  currency on 5 character stats: backpack capacity, mining efficiency (dig speed),
+  claustrophobia resistance, climb/reel speed, and rope reach.
+- ✅ Cost curve `base * 1.55^level` (caps: 6, rope 10). Bases tuned low and
+  staggered (12–20) so the first buy of each line lands after ~1 descent — the
+  hook — while the ramp keeps a long tail. **Rope is the cheapest line on purpose**:
+  it is the depth gate that unlocks richer ore, so rushing it compounds earnings
+  (the "one more dive" loop). Levels applied live via `main._apply_upgrades()`.
+- 📋 Migrate rope reach to the prestige axis once that system exists (see lore).
+- ❓ Numbers are a first addictive pass, not a final balance — retune after play.
 
 ## Phase 3 — Idle / offline layer 📋
 
